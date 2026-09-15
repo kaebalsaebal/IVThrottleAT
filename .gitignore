@@ -1,0 +1,13 @@
+build*/
+.vs/
+*.user
+*.suo
+*.asi
+*.dll
+*.exe
+*.pdb
+*.obj
+*.lib
+*.exp
+*.log
+ThrottleAT.csv
