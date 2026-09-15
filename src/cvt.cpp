@@ -3,8 +3,10 @@
 #include <cmath>
 namespace at {
 CvtDecision CvtController::update(const Telemetry& t, const Tune& p, double wheel, double scale) {
-    // Clutch slip is continuous in a CVT, not a request for stepped shifting.
-    if(p.cvt!=1 || t.kind!=VehicleClass::Scooter || !valid(t) ||
+    // Loss of grip/contact suspends ratio adaptation, not CVT ownership.
+    // Keep every other validity check, including fresh time and vehicle identity.
+    auto checked=t; checked.grounded=true;
+    if(p.cvt!=1 || t.kind!=VehicleClass::Scooter || !valid(checked) ||
        !std::isfinite(t.clutch) || t.clutch<0 || t.clutch>1 ||
        !std::isfinite(wheel) || wheel<0 || !std::isfinite(scale) || scale<=1) {reset();return {};}
     const double lo=t.ratios[t.gears], hi=t.ratios[1];
@@ -22,6 +24,8 @@ CvtDecision CvtController::update(const Telemetry& t, const Tune& p, double whee
     const double mid=std::clamp(2*p.cvtMid-.5*(p.cvtLow+p.cvtHigh),p.cvtLow,p.cvtHigh);
     const double x=std::clamp(demand_,0.0,1.0);
     const double target=(1-x)*(1-x)*p.cvtLow+2*x*(1-x)*mid+x*x*p.cvtHigh;
+    if(!t.grounded || std::abs(wheel-t.speed)>std::max(3.0,t.speed*.35))
+        return {true,ratio_,target}; // Fresh safe sample, last bounded ratio.
     // CE059 blends free revs and wheel revs before native engine inertia:
     // engineTarget = (1-clutch)*rawPedal + clutch*(wheel*ratio/scale).
     // Invert that blend, without writing revs or clutch. At disengagement

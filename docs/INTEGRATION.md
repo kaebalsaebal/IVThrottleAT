@@ -1,3 +1,5 @@
+> Current 0.5.2 control policy: [CHANGES-052.md](CHANGES-052.md). CVT stays engaged across contact loss/wheelspin; only explicit Cvt=0 chooses Scooter stepped AT.
+
 # Integration status — 0.5.0-test
 
 The original unavailable backend remains an interface/example in at.hpp. MSVC Win32 builds now use a concrete CE059 synchronous transmission hook in ce059.cpp. It calls Controller directly, commits the exact statically observed stock transition fields, and either skips stock forward selection for that invocation or passes through. It uses one statically verified native text implementation for F8 notifications and does not depend on FusionFix exports.

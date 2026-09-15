@@ -29,33 +29,41 @@ int main(int argc,char** argv){try{
         bool rejected=false;try{std::istringstream in(bad);at::parseConfig(in);}catch(...){rejected=true;}check(rejected,"invalid class/CVT settings rejected");
     }
     at::Telemetry t; t.vehicle=1;t.playerDriver=true;t.grounded=true;t.kind=at::VehicleClass::Scooter;t.model="FAGGIO";
-    t.gear=1;t.gears=4;t.ratios={0,3.2,2.1,1.5,.85,0,0,0,0};t.rpm=.4;t.throttle=.3;t.speed=10;
+    t.gear=1;t.gears=4;t.ratios={0,3.2,2.1,1.5,.85,0,0,0,0};t.rpm=.4;t.throttle=.3;t.speed=20;
     for(double fps:{30.,60.,144.}){
-        at::CvtController c; t.time=0;double last=t.ratios[1];at::CvtDecision d;
+        at::CvtController c; t.time=0;t.speed=20;double last=t.ratios[1];at::CvtDecision d;
         for(int i=0;i<int(fps*4);++i){t.time+=1/fps;d=c.update(t,scooter,20,80);
             check(d.active && d.ratio>=.85 && d.ratio<=3.2,"CVT stays within verified gear-ratio bounds");
             check(std::abs(d.ratio-last)<=3.2*scooter.cvtRate/fps+1e-8,"ratio cannot jump faster than slew limit");last=d.ratio;
         }
         check(std::abs(20*d.ratio/80-d.targetRevs)<.001,"steady wheel speed converges to target mechanical revs");
-        const double oldRatio=d.ratio;t.time+=1/fps;d=c.update(t,scooter,30,80);
+        const double oldRatio=d.ratio;t.time+=1/fps;t.speed=30;d=c.update(t,scooter,30,80);
         check(d.ratio<oldRatio,"increasing wheel speed continuously lowers ratio");
         t.time+=1/fps;t.vehicle++;d=c.update(t,scooter,30,80);
         check(d.ratio==t.ratios[t.gear],"new vehicle starts from its existing ratio");
-        t.grounded=false;t.time+=1/fps;check(!c.update(t,scooter,30,80).active,"airborne fails open");t.grounded=true;
+        const double beforeAirborne=d.ratio;
+        t.grounded=false;
+        for(int i=0;i<int(fps*20);++i) {
+            t.time+=1/fps;d=c.update(t,scooter,30,80);
+            check(d.active && d.ratio==beforeAirborne,"sustained airborne motion holds bounded ratio without stepped fallback");
+        }
+        t.vehicle++;t.time+=1/fps;d=c.update(t,scooter,30,80);
+        check(d.ratio==t.ratios[t.gear],"airborne vehicle replacement cannot inherit old virtual ratio");
+        t.grounded=true;
     }
-    at::CvtController c;t.time=0; t.gear=2;t.shifting=true;
+    at::CvtController c;t.time=0;t.speed=20; t.gear=2;t.shifting=true;
     t.clutch=.6;
     check(c.update(t,scooter,20,80).active,"clutch slip must not switch CVT to stepped AT");
     t.clutch=1;
     t.shifting=false;auto disabled=scooter;disabled.cvt=0;
     check(!c.update(t,disabled,20,80).active,"Cvt=0 delegates to stepped AT");
-    t.gear=1;t.time=.01;check(c.update(t,scooter,0,80).ratio==3.2,"standstill uses launch ratio without division by zero");
+    t.gear=1;t.speed=0;t.time=.01;check(c.update(t,scooter,0,80).ratio==3.2,"standstill uses launch ratio without division by zero");
     t.time=.02;check(!c.update(t,scooter,-1,80).active,"reverse speed rejected");
     // A sweep has many intermediate equilibria, not two RPM plateaus.
     for(double fps:{30.,60.,144.}) for(double clutch:{.6,.8,1.}) {
         double previous=0;
         for(int pedal=0;pedal<=10;++pedal) {
-            at::CvtController sweep;t.gear=1;t.clutch=clutch;t.throttle=pedal/10.;t.time=0;
+            at::CvtController sweep;t.speed=22;t.gear=1;t.clutch=clutch;t.throttle=pedal/10.;t.time=0;
             at::CvtDecision d;
             for(int i=0;i<int(fps*6);++i) {t.time=i/fps;d=sweep.update(t,scooter,22,80);}
             const double blended=(1-clutch)*t.throttle+clutch*22*d.ratio/80;
@@ -73,5 +81,22 @@ int main(int argc,char** argv){try{
             prevTarget=d.targetRevs;prevRatio=d.ratio;
         }
     }
+    // Wheelspin is transient unreliable contact data, not unsafe object data.
+    t.gear=1;t.clutch=1;t.grounded=true;t.speed=22;t.throttle=.5;t.time=0;
+    at::CvtController grip;at::CvtDecision held;
+    for(int i=0;i<200;++i) {t.time=i*.01;held=grip.update(t,scooter,22,80);}
+    const double gripRatio=held.ratio;
+    for(int i=200;i<2200;++i) {
+        t.time=i*.01;held=grip.update(t,scooter,70,80);
+        check(held.active && held.ratio==gripRatio,"sustained wheelspin holds current ratio without changing gear mode");
+    }
+    t.time+=.01;held=grip.update(t,scooter,22,80);
+    check(held.active && std::abs(held.ratio-gripRatio)<=3.2*scooter.cvtRate*.01,"traction recovery preserves continuous actuator response");
+    t.age=.2;t.time+=.01;
+    check(!grip.update(t,scooter,22,80).active,"stale CVT snapshot still releases control");t.age=0;
+    t.playerDriver=false;t.time+=.01;
+    check(!grip.update(t,scooter,22,80).active,"ownership loss still releases control");t.playerDriver=true;
+    t.gear=0;t.time+=.01;
+    check(!grip.update(t,scooter,22,80).active,"reverse still releases CVT");
     std::cout<<checks<<" motorcycle/CVT checks passed\n";
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}

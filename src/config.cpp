@@ -33,7 +33,7 @@ void validate(const Tune& p) {
     if (!(p.down >= .04 && p.down + .04 < p.low && p.low <= p.mid && p.mid <= p.high && p.high <= .98 &&
           p.kickThrottle >= .5 && p.kickThrottle <= 1 && p.kickTarget > p.down && p.kickTarget <= .88 &&
           p.cooldown >= .2 && p.cooldown <= 5 && p.confirm >= .04 && p.confirm <= .5 &&
-          p.lightThrottle >= .1 && p.lightThrottle <= .45 && p.midThrottle > p.lightThrottle && p.midThrottle <= .85 &&
+          p.lightThrottle >= .1 && p.lightThrottle <= .70 && p.midThrottle > p.lightThrottle && p.midThrottle <= .85 &&
           p.lightRise >= 0 && p.low + p.lightRise <= p.mid && p.liftHold >= 0 && p.liftHold <= 2 &&
           (p.cvt == 0 || p.cvt == 1) && p.cvtLow >= .15 && p.cvtMid >= p.cvtLow && p.cvtHigh >= p.cvtMid && p.cvtHigh <= .95 &&
           p.cvtRate >= .1 && p.cvtRate <= 5 && p.cvtResponse >= .05 && p.cvtResponse <= 2))
@@ -56,11 +56,11 @@ Tune Config::resolve(VehicleClass kind, const std::string& model) const {
     switch (kind) {
     case VehicleClass::Heavy: p.low=.20; p.mid=.48; p.high=.88; p.down=.07; p.cooldown=.9; name="Heavy"; break;
     case VehicleClass::Sport: p.low=.25; p.mid=.64; p.high=.97; p.down=.09; p.cooldown=.45; name="Sport"; break;
-    case VehicleClass::Motorcycle: p.low=.32; p.mid=.68; p.high=.97; p.down=.11; p.cooldown=.40; name="Motorcycle"; break;
-    case VehicleClass::SportBike: p.low=.40; p.mid=.78; p.high=.98; p.down=.14; p.cooldown=.30; p.confirm=.08; p.kickThrottle=.78; p.kickTarget=.82; p.liftHold=.25; name="SportBike"; break;
-    case VehicleClass::CruiserBike: p.low=.26; p.mid=.56; p.high=.90; p.down=.09; p.cooldown=.60; p.kickThrottle=.88; p.kickTarget=.72; name="CruiserBike"; break;
-    case VehicleClass::StandardBike: p.low=.32; p.mid=.68; p.high=.97; p.down=.11; p.cooldown=.40; name="StandardBike"; break;
-    case VehicleClass::Scooter: p.low=.27; p.mid=.55; p.high=.88; p.down=.08; p.cooldown=.50; p.cvt=1; name="Scooter"; break;
+    case VehicleClass::Motorcycle: p.low=.23; p.mid=.68; p.high=.97; p.down=.08; p.cooldown=.40; name="Motorcycle"; break;
+    case VehicleClass::SportBike: p.low=.24; p.mid=.78; p.high=.98; p.down=.09; p.cooldown=.30; p.confirm=.08; p.kickThrottle=1; p.kickTarget=.82; p.liftHold=.25; name="SportBike"; break;
+    case VehicleClass::CruiserBike: p.low=.22; p.mid=.56; p.high=.90; p.down=.07; p.cooldown=.60; p.kickThrottle=1; p.kickTarget=.72; name="CruiserBike"; break;
+    case VehicleClass::StandardBike: p.low=.23; p.mid=.68; p.high=.97; p.down=.08; p.cooldown=.40; name="StandardBike"; break;
+    case VehicleClass::Scooter: p.low=.22; p.mid=.55; p.high=.88; p.down=.07; p.cooldown=.50; p.cvt=1; name="Scooter"; break;
     default: break;
     }
     // Legacy shared motorcycle settings remain a base; the four new classes override them.
@@ -68,7 +68,9 @@ Tune Config::resolve(VehicleClass kind, const std::string& model) const {
         overlay(p, *this, "Class:Motorcycle");
     overlay(p, *this, "Class:" + name);
     overlay(p, *this, "Model:" + upper(model));
+    // Legacy KickThrottle keys still parse, but 0.5.2 always requires full pedal.
     validate(p);
+    p.kickThrottle=1;
     return p;
 }
 Config parseConfig(std::istream& input) {

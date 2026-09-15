@@ -1,3 +1,5 @@
+> Current 0.5.2 persistence policy supersedes the historical fallback descriptions below; see [CHANGES-052.md](CHANGES-052.md). Engine hook addresses and CVT target curve remain unchanged.
+
 # 0.5.0-test motorcycle presets and experimental CVT
 
 ## Scope and classification

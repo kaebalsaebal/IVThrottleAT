@@ -99,21 +99,25 @@ int main(int argc,char** argv) {
         check(atLcpDispatch(trans,handling,lcpFrame.data())==0,"LCP AI/other vehicle never controlled");
         put(ped+0xb30,vehicle);
         check(atLcpDispatch(trans,handling,nullptr)==0,"missing LCP frame safely forwards");
-        // Verified bikes use the original shared gate. Scooters receive the
-        // Motorcycle tune too: absence of CVT must not bypass custom control.
+        // Verified bikes use the original shared gate. Only an explicit Cvt=0
+        // selects Scooter stepped AT; an unavailable CVT cannot substitute it.
         config=at::Config{}; addModel("FAGGIO"); put(modelInfo+0x3c,joaat("FAGGIO"));
         put(vehicle+0x1304,1u); put(vehicle+0xf84,2);
         put(trans,std::int16_t{1}); put(trans+4,.31f); put(trans+0x10,.62f);
-        put(sp+0x1c,6.5f); put(sp+0x20,6.5f); // mechanical revs=.26
+        put(sp+0x1c,5.5f); put(sp+0x20,5.5f); // mechanical revs=.22, below low-pedal band
         bikeVerified=false; state=2; controller.reset();
         check(atDispatch(trans,handling,stack.data())==0,"unverified bike route never writes");
         bikeVerified=true; lastControlTime=-1; lastControlId=0;
+        put(image+clockRva,4900u);
+        check(atDispatch(trans,handling,stack.data())==0 && !cvtLease.active && read<std::int16_t>(trans)==1,
+              "unavailable CVT releases safely without silently selecting Scooter stepped AT");
+        config.sections["Class:Scooter"]["Cvt"]=0;
         int bikeResult=0;
         for(unsigned i=0;i<90;++i) { put(image+clockRva,5000u+i*10); bikeResult=atDispatch(trans,handling,stack.data()); }
-        check(bikeResult==1 && read<std::int16_t>(trans)==1,"Faggio actively holds Scooter gear instead of passenger early shift or stock bypass");
+        check(bikeResult==1 && read<std::int16_t>(trans)==1,"Faggio explicit stepped preset actively holds below its low-pedal shift band");
         put(sp+0x1c,9.5f); put(sp+0x20,9.5f); // mechanical revs=.38, crosses Scooter band
         for(unsigned i=0;i<30;++i) { put(image+clockRva,5900u+i*10); atDispatch(trans,handling,stack.data()); }
-        check(read<std::int16_t>(trans)==2,"Faggio conventional ThrottleAT upshift when CVT unavailable");
+        check(read<std::int16_t>(trans)==2,"Faggio explicit Cvt=0 uses ThrottleAT stepped upshift");
         check(read<float>(trans+4)==.31f,"bike native revs preserved");
         put(wheelArray+0x164,0u);
         check(atDispatch(trans,handling,stack.data())==0,"bike wheelie/contact loss restores original decision for that tick");
@@ -126,6 +130,7 @@ int main(int argc,char** argv) {
         // optional limiter and torque sites. Neither shared handling nor gear is changed.
         put(vehicle+0x1304,1u); put(vehicle+0xf84,2); put(trans,std::int16_t{1}); put(trans+0x10,1.0f);
         put(sp+0x1c,10.0f); put(sp+0x20,10.0f); cvtVerified=true; cvtFault=false;
+        config.sections["Class:Scooter"]["Cvt"]=1;
         lastControlTime=-1; lastControlId=0; cvtController.reset(); state=2;
         std::array<unsigned char,0x100> originalHandling{};
         copyRead(originalHandling.data(),handling,originalHandling.size());
@@ -169,8 +174,40 @@ int main(int argc,char** argv) {
                 check(atCvtRatio(0,trans,handling,&rpmRatio)==1 && atCvtRatio(2,trans,handling,&torqueRatio)==1,"clutch slip retains engine ratio lease");
             }
         }
+        // Sustain a wheelie and then wheelspin. Ownership is revalidated every
+        // call; each engine invocation receives a new, single-use ratio lease.
+        put(trans,std::int16_t{1});put(trans+0x10,1.0f);
+        put(vehicle+0x1078,.5f);put(sp+0x1c,20.0f);put(sp+0x20,20.0f);
+        lastControlTime=-1;lastControlId=0;cvtController.reset();
+        for(unsigned i=0;i<200;++i) {
+            put(image+clockRva,20000u+i*10);
+            check(atDispatch(trans,handling,stack.data())==1 && cvtLease.active,"healthy CVT calibration");
+        }
+        const auto heldRatio=cvtLease.ratio;
+        put(wheelArray+0x164,0u);
+        for(unsigned i=0;i<2000;++i) {
+            put(image+clockRva,22000u+i*10);
+            if(i==1000) {put(wheelArray+0x164,1u);put(sp+0x1c,70.0f);}
+            check(atDispatch(trans,handling,stack.data())==1 && cvtLease.active && cvtLease.ratio==heldRatio,
+                  "sustained contact loss and wheelspin retain CVT at last bounded ratio");
+            check(read<std::int16_t>(trans)==1,"CVT traction transient never commits integer shifts");
+            check(atCvtRatio(0,trans,handling,&rpmRatio)==1 && atCvtRatio(2,trans,handling,&torqueRatio)==1 && rpmRatio==heldRatio && torqueRatio==heldRatio,
+                  "fresh per-invocation engine lease persists during traction transient");
+        }
+        put(flags,std::uint8_t{5});put(image+clockRva,42000u);
+        check(atDispatch(trans,handling,stack.data())==1 && cvtLease.ratio==ratios[1],"replacement identity cannot inherit held CVT ratio during wheelspin");
+        put(sp+0x1c,20.0f);put(image+clockRva,42010u);
+        check(atDispatch(trans,handling,stack.data())==1 && cvtLease.active,"traction recovery remains CVT");
+        put(vehicle+0xf84,4);
+        check(atDispatch(trans,handling,stack.data())==0 && !cvtLease.active,"CVT still rejects malformed bike wheel layout");put(vehicle+0xf84,2);
+        put(sp+0x20,-1.0f);
+        check(atDispatch(trans,handling,stack.data())==0 && !cvtLease.active,"reverse still releases CVT safely");put(sp+0x20,20.0f);
+        put(vehicle+0x1078,std::numeric_limits<float>::quiet_NaN());
+        check(atDispatch(trans,handling,stack.data())==0 && !cvtLease.active,"NaN telemetry never reuses a prior lease");put(vehicle+0x1078,.5f);
+        cvtFault=true;put(image+clockRva,42020u);
+        check(atDispatch(trans,handling,stack.data())==0 && !cvtLease.active && read<std::int16_t>(trans)==1,"CVT fault cannot silently select stepped AT");cvtFault=false;
         config.sections["Class:Scooter"]["Cvt"]=0;
-        put(image+clockRva,7640u); atDispatch(trans,handling,stack.data());
+        put(image+clockRva,42030u); atDispatch(trans,handling,stack.data());
         check(!cvtLease.active,"Cvt=0 selects Scooter stepped AT");
         std::cout<<checks<<" CE059 bridge checks passed\n";
     } catch(const std::exception& e) { std::cerr<<e.what()<<'\n'; VirtualFree(memory,0,MEM_RELEASE);return 1; }

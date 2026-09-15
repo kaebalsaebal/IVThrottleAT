@@ -9,9 +9,9 @@ namespace at {
 enum class VehicleClass { Passenger, Heavy, Sport, Motorcycle, SportBike, CruiserBike, StandardBike, Scooter };
 struct Tune {
     double low = .22, mid = .54, high = .94;
-    double down = .07, kickThrottle = .82, kickTarget = .78;
+    double down = .07, kickThrottle = 1.0, kickTarget = .78;
     double cooldown = .65, confirm = .12;
-    double lightThrottle = .30, midThrottle = .65, lightRise = .04;
+    double lightThrottle = .60, midThrottle = .85, lightRise = .04;
     double liftHold = .45;
     double cvt = 0, cvtLow = .20, cvtHigh = .82, cvtRate = 1.8, cvtMid = .44, cvtResponse = .25;
 };
@@ -47,13 +47,16 @@ struct Decision { int gear = 0; Reason reason = Reason::Fallback; };
 class Controller {
 public:
     Decision update(const Telemetry& t, const Tune& tune);
-    void reset();
+    void reset(bool keepKick = false);
     double demand() const noexcept { return demand_; }
 private:
     std::uint64_t vehicle_ = 0;
     double lastTime_ = -1, lastShift_ = 0, since_ = 0, requestTime_ = 0;
     int observed_ = 0, candidate_ = 0, pending_ = 0;
     double demand_ = 0, previousPedal_ = 0, liftUntil_ = 0;
+    Reason candidateReason_ = Reason::Hold;
+    bool kickUsed_ = false;
+    double kickReleaseSince_ = -1;
 };
 
 struct CvtDecision { bool active = false; double ratio = 0, targetRevs = 0; };

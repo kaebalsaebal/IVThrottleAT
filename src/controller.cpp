@@ -34,20 +34,31 @@ ShiftBands shiftBands(double throttle, const Tune& p) {
     const double down = std::min(p.down + .12*x*x, up - .06);
     return {up, down, down + .035};
 }
-void Controller::reset() { *this = Controller{}; }
+void Controller::reset(bool keepKick) {
+    const auto vehicle=vehicle_; const bool used=kickUsed_;
+    *this = Controller{};
+    if(keepKick) { vehicle_=vehicle; kickUsed_=used; }
+}
 Decision Controller::update(const Telemetry& t, const Tune& p) {
-    if (!valid(t)) { reset(); return {}; }
-    if (vehicle_ && (t.time < lastTime_ || t.time - lastTime_ > .25)) {
-        reset(); return {}; // Release original control after a time discontinuity.
+    if (!valid(t)) { reset(true); return {}; }
+    if (vehicle_ && lastTime_ >= 0 && (t.time < lastTime_ || t.time - lastTime_ > .25)) {
+        reset(true); return {}; // Release original control after a time discontinuity.
     }
     double dt = t.time - lastTime_;
-    if (vehicle_ != t.vehicle) {
-        reset(); vehicle_ = t.vehicle; observed_ = t.gear;
+    if (vehicle_ != t.vehicle || lastTime_ < 0) {
+        reset(vehicle_ == t.vehicle); vehicle_ = t.vehicle; observed_ = t.gear;
         // Entry synchronization is not a gear change. Settle for 200 ms, then
         // allow an early first shift; actual shifts retain the full cooldown.
         lastShift_ = t.time - p.cooldown + .20;
         demand_ = previousPedal_ = t.throttle; dt = 0;
     }
+    // One kickdown per full-pedal press. Filtering approaches 1 asymptotically,
+    // so use the actual game pedal for full travel and debounce with confirm.
+    const bool fullPedal = t.throttle >= 1.0;
+    if (t.throttle <= .90) {
+        if (kickReleaseSince_ < 0) kickReleaseSince_ = t.time;
+        if (t.time - kickReleaseSince_ >= .15) kickUsed_ = false;
+    } else kickReleaseSince_ = -1;
     // A deliberate pedal release holds the gear briefly for engine braking.
     if (previousPedal_ >= .55 && previousPedal_ - t.throttle >= .20)
         liftUntil_ = t.time + p.liftHold;
@@ -61,7 +72,7 @@ Decision Controller::update(const Telemetry& t, const Tune& p) {
         if (t.gear == pending_) {
             observed_ = t.gear; pending_ = 0; lastShift_ = t.time;
         } else if (t.time - requestTime_ > 1.0) {
-            reset(); return {}; // Gear request never acknowledged.
+            reset(true); return {}; // Gear request never acknowledged.
         } else {
             return {pending_, Reason::Hold};
         }
@@ -77,22 +88,23 @@ Decision Controller::update(const Telemetry& t, const Tune& p) {
     int target = t.gear;
     Reason reason = Reason::Hold;
     if (t.gear > 1 && t.speed > 2 && t.brake < .1 &&
-        t.throttle >= p.kickThrottle && demand_ >= p.kickThrottle &&
+        fullPedal && !kickUsed_ &&
         t.rpm < p.kickTarget && predicted(t.gear - 1) <= p.kickTarget) {
         target--; reason = Reason::Kickdown;
-    } else if (t.gear > 1 && t.rpm < bands.down && predicted(t.gear - 1) < bands.up - .04) {
+    } else if (t.gear > 1 && t.rpm < ((fullPedal || kickUsed_) ? p.down : bands.down) && predicted(t.gear - 1) < bands.up - .04) {
         target--; reason = Reason::Downshift;
     } else if (t.gear < t.gears && t.speed > 2 && t.rpm >= bands.up &&
                predicted(t.gear + 1) > bands.minAfterUpshift &&
                // Never upshift on closed throttle; braking/lift retains the gear
                // except near the normalized limiter. Reverse remains backend-owned.
                t.throttle > .02 && ((t.brake < .15 && t.time >= liftUntil_) || t.rpm >= .98) &&
-               (demand_ < p.kickThrottle || t.rpm > p.kickTarget + .08)) {
+               (!fullPedal || t.rpm > p.kickTarget + .08)) {
         target++; reason = Reason::Upshift;
     }
     if (target == t.gear) { candidate_ = 0; return {t.gear, Reason::Hold}; }
-    if (candidate_ != target) { candidate_ = target; since_ = t.time; }
+    if (candidate_ != target || candidateReason_ != reason) { candidate_ = target; candidateReason_ = reason; since_ = t.time; }
     if (t.time - since_ < p.confirm) return {t.gear, Reason::Hold};
+    if (reason == Reason::Kickdown) kickUsed_ = true;
     candidate_ = 0; pending_ = target; requestTime_ = t.time; lastShift_ = t.time;
     return {target, reason};
 }

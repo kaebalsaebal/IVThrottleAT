@@ -275,7 +275,7 @@ void record(const at::Telemetry& t, const at::Decision& d, bool applied, const c
 // Diagnostic revision: input is independent of player ownership checks.
 void processToggle(bool down) {
     if(down&&!keyWasDown) {
-        state=state.load()==2?1:2; controller.reset(); controlAnnounced=false; cvtLease={}; cvtController.reset(); cvtAnnounced=false;
+        state=state.load()==2?1:2; controller.reset(true); controlAnnounced=false; cvtLease={}; cvtController.reset(); cvtAnnounced=false;
         log(state.load()==2?"CONTROL enabled (F8)":"OBSERVE enabled (F8): stock shifts");
         notifyMode(state.load());
     }
@@ -336,12 +336,12 @@ int dispatch(std::uintptr_t t, std::uintptr_t handling, const std::uint32_t* sta
     static bool playerSeen=false;
     if(!playerSeen) { playerSeen=true; log("Player driver matched; transmission telemetry path reached."); }
     const auto reject=[](const char* why) {
-        controller.reset(); cvtController.reset();
+        controller.reset(true); cvtController.reset();
         if(lastReject!=why) { log(std::string("Stock fallback: ")+why); lastReject=why; }
         return 0;
     };
     if(state.load()==3) return 0;
-    if(read<std::uint8_t>(image+pauseRva)||read<std::uint8_t>(image+pauseRva+1)) { controller.reset(); return 0; }
+    if(read<std::uint8_t>(image+pauseRva)||read<std::uint8_t>(image+pauseRva+1)) { controller.reset(true); return 0; }
     const auto type=read<std::uint32_t>(vehicle+0x1304);
     if((type!=0 && type!=1) || read<std::uintptr_t>(vehicle+0xdc8)!=handling)
         return reject("unsupported type or handling mismatch");
@@ -352,8 +352,9 @@ int dispatch(std::uintptr_t t, std::uintptr_t handling, const std::uint32_t* sta
     sample.playerDriver=true; sample.gear=read<std::int16_t>(t); sample.gears=read<std::uint8_t>(handling+0x40);
     const float gameRevs=read<float>(t+4); sample.rpm=gameRevs;
     const float gas=read<float>(vehicle+0x1078), brake=read<float>(vehicle+0x107c), clutch=read<float>(t+0x10);
-    if(!std::isfinite(gas)||gas<0||gas>1.01f||!std::isfinite(brake)||std::abs(brake)>1.01f||!std::isfinite(clutch)||clutch<0||clutch>1.01f) { controller.reset(); return 0; }
-    sample.nativeRevs=gameRevs; sample.clutch=clutch;
+    if(!std::isfinite(gas)||gas<0||gas>1.01f||!std::isfinite(brake)||std::abs(brake)>1.01f||!std::isfinite(clutch)||clutch<0||clutch>1.01f)
+        return reject("invalid pedal, brake or clutch");
+    sample.nativeRevs=gameRevs; sample.clutch=std::min(1.0,static_cast<double>(clutch));
     sample.throttle=std::min(1.0,static_cast<double>(gas)); sample.brake=std::min(1.0,std::abs(static_cast<double>(brake)));
     // In first gear both vanilla and LCP deliberately cap the clutch below
     // 1 at low revs. This is launch slip, not an outstanding gear change.
@@ -365,10 +366,13 @@ int dispatch(std::uintptr_t t, std::uintptr_t handling, const std::uint32_t* sta
     const auto sp=reinterpret_cast<std::uintptr_t>(stack);
     const float wheel=read<float>(sp+0x1c), longitudinal=read<float>(sp+0x20);
     sample.speed=std::abs(static_cast<double>(longitudinal));
-    if(!std::isfinite(wheel)||!std::isfinite(longitudinal)||longitudinal<-.1f||
-       std::abs(wheel-longitudinal)>std::max(3.0,sample.speed*.35)) { controller.reset(); return 0; }
+    if(!std::isfinite(wheel)||!std::isfinite(longitudinal)||longitudinal<-.1f)
+        return reject("invalid wheel speed or reverse");
+    const bool wheelSlip=std::abs(wheel-longitudinal)>std::max(3.0,sample.speed*.35);
     const int wheels=read<int>(vehicle+0xf84); const auto wheelArray=read<std::uintptr_t>(vehicle+0xf80);
-    sample.grounded=wheels>=2&&wheels<=8&&wheelArray && (type!=1 || wheels==2);
+    if(wheels<2 || wheels>8 || !wheelArray || (type==1 && wheels!=2))
+        return reject("invalid wheel layout");
+    sample.grounded=true;
     for(int i=0;sample.grounded&&i<wheels;++i) sample.grounded=(read<std::uint32_t>(wheelArray+i*0x170+0x164)&1)!=0;
     if(sample.gears>0&&sample.gears<=8) for(int i=1;i<=sample.gears;++i) sample.ratios[i]=read<float>(handling+0x54+i*4);
     const auto modelIndex=read<std::int16_t>(vehicle+0x2e);
@@ -378,7 +382,7 @@ int dispatch(std::uintptr_t t, std::uintptr_t handling, const std::uint32_t* sta
     const auto m=models.find(hash);
     if(m!=models.end()) { sample.model=m->second.name; sample.kind=m->second.kind; }
     if(type==1) sample.kind=config.bikeClass(sample.model);
-        const float flatVelocity=read<float>(handling+0x4c);
+    const float flatVelocity=read<float>(handling+0x4c);
     if(!std::isfinite(flatVelocity)||flatVelocity<=1||!std::isfinite(gameRevs)||gameRevs<0||gameRevs>1.2f)
         return reject("invalid revs or handling velocity");
     // This is the normalized wheel/ratio signal used by stock forward shifts.
@@ -390,17 +394,31 @@ int dispatch(std::uintptr_t t, std::uintptr_t handling, const std::uint32_t* sta
     const bool wantsCvt=sample.kind==at::VehicleClass::Scooter && tune.cvt==1;
     const bool canCvt=wantsCvt && cvtVerified && !cvtFault;
     // Native gear stays fixed during CVT; its factory ratio is not the active ratio.
-    if(canCvt) sample.rpm=gameRevs;
-    if(!at::valid(sample)) { record(sample,{},false,"invalid"); return reject("invalid sample / incomplete wheel contact / ratios"); }
+    if(wantsCvt) sample.rpm=gameRevs;
+    auto checked=sample;
+    // For verified CVT, a wheelie or wheelspin freezes ratio adaptation while
+    // keeping the integer gear held. Malformed wheel layout was rejected above.
+    if(canCvt) checked.grounded=true;
+    if((!canCvt && wheelSlip) || !at::valid(checked)) {
+        record(sample,{},false,"invalid"); return reject("invalid sample / incomplete wheel contact / ratios");
+    }
+    if(state.load()!=2) { record(sample,{sample.gear,at::Reason::Hold},false,"observe"); controller.reset(true); cvtController.reset(); return 0; }
+    if(wantsCvt && !canCvt) {
+        if(!cvtFallbackAnnounced) {
+            cvtFallbackAnnounced=true;
+            log("CVT unavailable: control released for safety; automatic Scooter AT substitution disabled. Set Cvt=0 explicitly for stepped AT.");
+        }
+        record(sample,{sample.gear,at::Reason::Hold},false,"cvt_unavailable");
+        return reject("CVT hooks unavailable or faulted");
+    }
     if(!lastReject.empty()) { log("Valid player telemetry recovered."); lastReject.clear(); }
-    if(state.load()!=2) { record(sample,{sample.gear,at::Reason::Hold},false,"observe"); controller.reset(); return 0; }
-        // Reverse/engine-off/vehicle-exit can bypass this hook entirely. Expected
+    // Reverse/engine-off/vehicle-exit can bypass this hook entirely. Expected
     // lifecycle gaps reset the controller and give vanilla one tick, then resume.
     const bool discontinuity=lastControlId!=sample.vehicle || lastControlTime<0 ||
         sample.time<lastControlTime || sample.time-lastControlTime>.25;
     lastControlId=sample.vehicle; lastControlTime=sample.time;
     if(discontinuity) {
-        controller.reset(); cvtController.reset();
+        controller.reset(true); cvtController.reset();
         // A CVT starts from the current ratio and can own this very call.
         // Do not give stock selection a free upshift on entry/resynchronization.
         if(!canCvt) { record(sample,{sample.gear,at::Reason::Hold},false,"resync"); return 0; }
@@ -410,15 +428,13 @@ int dispatch(std::uintptr_t t, std::uintptr_t handling, const std::uint32_t* sta
         if(choice.active && playerIsDriver(vehicle) && identity(vehicle)==sample.vehicle) {
             cvtLease={true,t,handling,sample.vehicle,read<std::uint32_t>(image+clockRva),sample.gear,static_cast<float>(choice.ratio),0};
             cvtTarget=static_cast<float>(choice.targetRevs);
-            controller.reset();
-            record(sample,{sample.gear,at::Reason::Hold},true,"control_cvt");
+            controller.reset(true);
+            record(sample,{sample.gear,at::Reason::Hold},true,(!sample.grounded || wheelSlip)?"control_cvt_hold":"control_cvt");
             return 1; // Hold the integer gear; engine gates use the virtual ratio.
         }
+        // A rejected CVT sample must never silently enter the stepped scheduler.
+        return reject("CVT sample or ownership rejected");
     } else cvtController.reset();
-    if(wantsCvt && !canCvt && !cvtFallbackAnnounced) {
-        cvtFallbackAnnounced=true;
-        log("CVT unavailable: using ThrottleAT Scooter stepped-AT preset.");
-    }
     const auto decision=controller.update(sample,tune);
     if(decision.reason==at::Reason::Fallback) { state=3; notifyMode(3); log("Fallback latched: controller time gap or shift timeout. F8 retries."); record(sample,decision,false,"fault"); return 0; }
     if(!playerIsDriver(vehicle)||identity(vehicle)!=sample.vehicle||!commit(t,sample.gear,decision.gear,read<std::uint32_t>(image+clockRva))) {
@@ -510,7 +526,7 @@ int initialize(HMODULE module) noexcept {
         DWORD n=GetModuleFileNameW(module,buffer,32768); if(!n||n>=32768) return 0;
         auto basePath=std::filesystem::path(buffer);
         logFile.open(std::filesystem::path(basePath).replace_extension(L".log"),std::ios::trunc);
-        log("ThrottleAT 0.5.1-test smooth CVT and experimental CVT CE059 Windows: live driving validation pending");
+        log("ThrottleAT 0.5.2-test persistent CVT and full-pedal single kickdown and experimental CVT CE059 Windows: live driving validation pending");
         n=GetModuleFileNameW(nullptr,buffer,32768); if(!n||n>=32768) return 0;
         const auto exe=std::filesystem::path(buffer);
         if(!supportedVersion(exe)) { log("Requires EXE file version 1.2.0.59: no hook installed."); return 0; }
@@ -549,7 +565,7 @@ int initialize(HMODULE module) noexcept {
                          : "Motorcycle route differs: motorcycle control unavailable.");
         cvtVerified=bikeVerified && verifiedCvtLayout(image);
         log(cvtVerified ? "CVT engine instruction windows verified; preparing three ratio hooks."
-                        : "CVT engine layout unavailable; Scooter stepped AT remains available.");
+                        : "CVT engine layout unavailable; CVT control will stay released. Explicit Cvt=0 selects Scooter AT.");
         if(MH_Initialize()!=MH_OK) { log("MinHook initialization failed."); return 0; }
         const auto target=reinterpret_cast<void*>(image+shiftRva);
         void* lcpTarget=nullptr;
@@ -594,7 +610,7 @@ int initialize(HMODULE module) noexcept {
                 if(MH_CreateHook(cvtTargets[cvtCreated],cvtGates[cvtCreated],cvtGateways[cvtCreated])!=MH_OK) break;
             if(cvtCreated!=3) {
                 for(unsigned i=0;i<cvtCreated;++i) MH_RemoveHook(cvtTargets[i]);
-                cvtVerified=false; log("CVT hook creation unavailable; Scooter stepped AT retained.");
+                cvtVerified=false; log("CVT hook creation unavailable; CVT control will stay released. Explicit Cvt=0 selects Scooter AT.");
             }
         }
         lcpActive=lcpTarget!=nullptr;
