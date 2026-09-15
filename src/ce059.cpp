@@ -20,6 +20,15 @@
 #include <stdexcept>
 #include <vector>
 
+extern "C" void atCvtRpmGate();
+extern "C" void* atCvtRpmGateway;
+extern "C" void* atCvtRpmContinue;
+extern "C" void atCvtLimitGate();
+extern "C" void* atCvtLimitGateway;
+extern "C" void* atCvtLimitContinue;
+extern "C" void atCvtTorqueGate();
+extern "C" void* atCvtTorqueGateway;
+extern "C" void* atCvtTorqueContinue;
 extern "C" void atGate();
 extern "C" void atLcpGate();
 extern "C" void* atLcpGateway;
@@ -52,6 +61,18 @@ DWORD ownerThread=0;
 std::string lastReject;
 at::Config config;
 at::Controller controller;
+at::CvtController cvtController;
+bool cvtVerified=false, cvtFault=false, cvtAnnounced=false, cvtFallbackAnnounced=false;
+struct CvtLease {
+    bool active=false;
+    std::uintptr_t transmission=0, handling=0;
+    std::uint64_t vehicle=0;
+    std::uint32_t tick=0;
+    int gear=0;
+    float ratio=0;
+    unsigned phase=0;
+} cvtLease;
+float cvtTarget=0;
 std::ofstream logFile, csv;
 std::mutex logMutex;
 std::atomic<unsigned long> entryCalls[2]{}, playerEntryCalls[2]{}, midPlayerCalls{0};
@@ -135,7 +156,7 @@ void loadModels(const std::filesystem::path& root) {
             const auto comma=line.find(','); if(comma!=std::string::npos) addModel(line.substr(0,comma));
         }
     }
-    for(const auto* name:{"SULTAN","FAGGIO"}) addModel(name);
+    for(const auto* name:{"FAGGIO","AKUMA","FREEWAY","PCJ","BATI","BATI2","HAKUCHOU","HAKUCHOU2","NRG900","DOUBLE","DOUBLE2","ANGEL","DAEMON","DIABOLUS","HELLFURY","HEXER","LYCAN","NIGHTBLADE","REVENANT","WOLFSBANE","ZOMBIE"}) addModel(name);
     for(const auto& section:config.sections) if(section.first.rfind("Model:",0)==0) addModel(section.first.substr(6));
 }
 bool supportedVersion(const std::filesystem::path& file) {
@@ -153,7 +174,7 @@ bool supportedVersion(const std::filesystem::path& file) {
 // Called on the same game thread as the vehicle update, never from a worker thread.
 void notifyMode(int mode) noexcept {
     if(!printNotice) return;
-    const char* message=mode==4 ? "ThrottleAT: ACTIVE" :
+    const char* message=mode==5 ? "ThrottleAT: CVT TEST" : mode==4 ? "ThrottleAT: ACTIVE" :
                         mode==2 ? "ThrottleAT: ON (waiting for vehicle)" :
                         mode==1 ? "ThrottleAT: OFF (stock shifts)" : "ThrottleAT: ERROR (stock shifts)";
     __try { printNotice("STRING",message,3000,1); }
@@ -176,6 +197,15 @@ bool verifiedLcpLayout(std::uintptr_t module) {
         matches(module+0xebcb,{0xf3,0x0f,0x5e,0x52,0x4c,0x0f,0xb7,0x07,0x0f,0xbf,0xf8,0x89,0x7d,0x14}) &&
         matches(module+0xec61,{0x66,0x89,0x06,0x8b,0x45,0xf8,0x89,0x01,0xc7,0x47,0x10,0xcd,0xcc,0xcc,0x3d}) &&
         matches(module+0xec70,{0x5f,0x5e,0x8b,0xe5,0x5d,0xc2,0x18,0x00});
+}
+bool verifiedCvtLayout(std::uintptr_t module) {
+    // RPM, limiter and drive-force ratio operands in the same verified engine routine.
+    return callTarget(module+0x82fb6b)==module+0x82fdb0 &&
+        matches(module+0x82fdb0,{0x55,0x8b,0xec,0x83,0xe4,0xf0,0x83,0xec,0x28,0x56,0x57,0x8b,0xf9}) &&
+        matches(module+0x82fdce,{0x8b,0x91,0xc8,0x0d,0,0}) &&
+        matches(module+0x82fe3f,{0xf3,0x0f,0x10,0x74,0x82,0x54,0xf3,0x0f,0x5e,0x72,0x4c}) &&
+        matches(module+0x82fff2,{0xf3,0x0f,0x10,0x44,0x82,0x54,0xf3,0x0f,0x5e,0x42,0x4c}) &&
+        matches(module+0x830070,{0xf3,0x0f,0x59,0x4a,0x44,0xf3,0x0f,0x59,0x4c,0x82,0x54});
 }
 void moduleSnapshot() {
     HANDLE snapshot=CreateToolhelp32Snapshot(TH32CS_SNAPMODULE,GetCurrentProcessId());
@@ -234,10 +264,10 @@ void record(const at::Telemetry& t, const at::Decision& d, bool applied, const c
     const bool change=d.reason!=at::Reason::Hold || t.vehicle!=lastVehicle;
     if(csv&&rows<60000&&(change||now-lastSampleTime>=100)) {
         const auto tune=config.resolve(t.kind,t.model);
-        const double demand=state.load()==2 ? controller.demand() : t.throttle;
+        const double demand=state.load()==2 && !cvtLease.active ? controller.demand() : t.throttle;
         const auto bands=at::shiftBands(demand,tune);
         csv<<now<<','<<state.load()<<','<<t.vehicle<<','<<t.model<<','<<t.throttle<<','<<t.brake<<','<<t.speed<<','
-           <<t.rpm<<','<<t.gear<<','<<d.gear<<','<<static_cast<int>(d.reason)<<','<<applied<<','<<label<<','<<t.nativeRevs<<','<<t.clutch<<','<<demand<<','<<bands.up<<','<<bands.down<<'\n';
+           <<t.rpm<<','<<t.gear<<','<<d.gear<<','<<static_cast<int>(d.reason)<<','<<applied<<','<<label<<','<<t.nativeRevs<<','<<t.clutch<<','<<demand<<','<<bands.up<<','<<bands.down<<','<<(cvtLease.active?cvtLease.ratio:0)<<','<<(cvtLease.active?cvtTarget:0)<<','<<static_cast<int>(t.kind)<<'\n';
         if(change||rows%10==0) csv.flush(); ++rows; lastSampleTime=now;
     }
     lastVehicle=t.vehicle;
@@ -245,7 +275,7 @@ void record(const at::Telemetry& t, const at::Decision& d, bool applied, const c
 // Diagnostic revision: input is independent of player ownership checks.
 void processToggle(bool down) {
     if(down&&!keyWasDown) {
-        state=state.load()==2?1:2; controller.reset(); controlAnnounced=false;
+        state=state.load()==2?1:2; controller.reset(); controlAnnounced=false; cvtLease={}; cvtController.reset(); cvtAnnounced=false;
         log(state.load()==2?"CONTROL enabled (F8)":"OBSERVE enabled (F8): stock shifts");
         notifyMode(state.load());
     }
@@ -292,6 +322,7 @@ void traceCallback(std::uintptr_t t, std::uintptr_t handling) {
     log(out.str());
 }
 int dispatch(std::uintptr_t t, std::uintptr_t handling, const std::uint32_t* stack) {
+    cvtLease={}; // A ratio lease must be freshly issued by this shift callback.
     if(state.load()==0) return 0;
     // High-volume route diagnostics are retained for source debugging but disabled here.
     if(!ownerThread) ownerThread=GetCurrentThreadId();
@@ -305,7 +336,7 @@ int dispatch(std::uintptr_t t, std::uintptr_t handling, const std::uint32_t* sta
     static bool playerSeen=false;
     if(!playerSeen) { playerSeen=true; log("Player driver matched; transmission telemetry path reached."); }
     const auto reject=[](const char* why) {
-        controller.reset();
+        controller.reset(); cvtController.reset();
         if(lastReject!=why) { log(std::string("Stock fallback: ")+why); lastReject=why; }
         return 0;
     };
@@ -346,7 +377,7 @@ int dispatch(std::uintptr_t t, std::uintptr_t handling, const std::uint32_t* sta
     const auto hash=read<std::uint32_t>(modelInfo+0x3c);
     const auto m=models.find(hash);
     if(m!=models.end()) { sample.model=m->second.name; sample.kind=m->second.kind; }
-    if(type==1) sample.kind=at::VehicleClass::Motorcycle; // Includes FAGGIO: conventional AT fallback, not stock.
+    if(type==1) sample.kind=config.bikeClass(sample.model);
         const float flatVelocity=read<float>(handling+0x4c);
     if(!std::isfinite(flatVelocity)||flatVelocity<=1||!std::isfinite(gameRevs)||gameRevs<0||gameRevs>1.2f)
         return reject("invalid revs or handling velocity");
@@ -355,6 +386,11 @@ int dispatch(std::uintptr_t t, std::uintptr_t handling, const std::uint32_t* sta
     // mechanical estimate in first gear or once the clutch reengages in higher gears.
     if(!sample.shifting&&sample.gear>=1&&sample.gear<=sample.gears&&sample.gear<=8)
         sample.rpm=std::abs(wheel)*sample.ratios[sample.gear]/flatVelocity;
+    const auto tune=config.resolve(sample.kind,sample.model);
+    const bool wantsCvt=sample.kind==at::VehicleClass::Scooter && tune.cvt==1;
+    const bool canCvt=wantsCvt && cvtVerified && !cvtFault;
+    // Native gear stays fixed during CVT; its factory ratio is not the active ratio.
+    if(canCvt) sample.rpm=gameRevs;
     if(!at::valid(sample)) { record(sample,{},false,"invalid"); return reject("invalid sample / incomplete wheel contact / ratios"); }
     if(!lastReject.empty()) { log("Valid player telemetry recovered."); lastReject.clear(); }
     if(state.load()!=2) { record(sample,{sample.gear,at::Reason::Hold},false,"observe"); controller.reset(); return 0; }
@@ -363,8 +399,22 @@ int dispatch(std::uintptr_t t, std::uintptr_t handling, const std::uint32_t* sta
     const bool discontinuity=lastControlId!=sample.vehicle || lastControlTime<0 ||
         sample.time<lastControlTime || sample.time-lastControlTime>.25;
     lastControlId=sample.vehicle; lastControlTime=sample.time;
-    if(discontinuity) { controller.reset(); record(sample,{sample.gear,at::Reason::Hold},false,"resync"); return 0; }
-    const auto decision=controller.update(sample,config.resolve(sample.kind,sample.model));
+    if(discontinuity) { controller.reset(); cvtController.reset(); record(sample,{sample.gear,at::Reason::Hold},false,"resync"); return 0; }
+    if(canCvt) {
+        const auto choice=cvtController.update(sample,tune,std::abs(wheel),flatVelocity);
+        if(choice.active && playerIsDriver(vehicle) && identity(vehicle)==sample.vehicle) {
+            cvtLease={true,t,handling,sample.vehicle,read<std::uint32_t>(image+clockRva),sample.gear,static_cast<float>(choice.ratio),0};
+            cvtTarget=static_cast<float>(choice.targetRevs);
+            controller.reset();
+            record(sample,{sample.gear,at::Reason::Hold},true,"control_cvt");
+            return 1; // Hold the integer gear; engine gates use the virtual ratio.
+        }
+    } else cvtController.reset();
+    if(wantsCvt && !canCvt && !cvtFallbackAnnounced) {
+        cvtFallbackAnnounced=true;
+        log("CVT unavailable: using ThrottleAT Scooter stepped-AT preset.");
+    }
+    const auto decision=controller.update(sample,tune);
     if(decision.reason==at::Reason::Fallback) { state=3; notifyMode(3); log("Fallback latched: controller time gap or shift timeout. F8 retries."); record(sample,decision,false,"fault"); return 0; }
     if(!playerIsDriver(vehicle)||identity(vehicle)!=sample.vehicle||!commit(t,sample.gear,decision.gear,read<std::uint32_t>(image+clockRva))) {
         state=3; notifyMode(3); log("Fallback latched: identity/control failure."); return 0;
@@ -420,6 +470,31 @@ extern "C" int __cdecl atLcpDispatch(std::uintptr_t t,std::uintptr_t handling,co
     if(!copyRead(&normalized[7],fp+0x14,sizeof(float)) || !copyRead(&normalized[8],fp+0x18,sizeof(float))) return 0;
     return atDispatch(t,handling,normalized.data());
 }
+extern "C" int __cdecl atCvtRatio(unsigned site,std::uintptr_t t,std::uintptr_t handling,float* out) noexcept {
+    try {
+        if(site>2 || !out || !cvtVerified || cvtFault || state.load()!=2 ||
+           GetCurrentThreadId()!=ownerThread || !cvtLease.active ||
+           t!=cvtLease.transmission || handling!=cvtLease.handling ||
+           read<std::uint32_t>(image+clockRva)!=cvtLease.tick) return 0;
+        const auto vehicle=t-transmissionOffset;
+        if(!playerIsDriver(vehicle) || identity(vehicle)!=cvtLease.vehicle ||
+           read<std::uintptr_t>(vehicle+0xdc8)!=handling || read<std::int16_t>(t)!=cvtLease.gear ||
+           !std::isfinite(cvtLease.ratio) || cvtLease.ratio<=0) {cvtLease.active=false;return 0;}
+        if((site==0 && cvtLease.phase!=0) || (site==1 && cvtLease.phase!=1) ||
+           (site==2 && cvtLease.phase!=1 && cvtLease.phase!=2)) return 0;
+        *out=cvtLease.ratio;
+        cvtLease.phase=site+1;
+        if(site==2) {
+            cvtLease.active=false; // Consumed by this engine invocation, never reusable.
+            if(!cvtAnnounced) {
+                cvtAnnounced=true;
+                log("CVT ENGINE COUPLED: player ratio consumed by RPM and drive-force paths.");
+                notifyMode(5);
+            }
+        }
+        return 1;
+    } catch(...) {cvtLease.active=false; cvtFault=true; return 0;}
+}
 namespace ce059 {
 int status() noexcept { return state.load(); }
 void deactivate() noexcept { if(state.load()!=0) state=1; } // Pass-through; installed/pinned gate stays valid until process exit.
@@ -430,7 +505,7 @@ int initialize(HMODULE module) noexcept {
         DWORD n=GetModuleFileNameW(module,buffer,32768); if(!n||n>=32768) return 0;
         auto basePath=std::filesystem::path(buffer);
         logFile.open(std::filesystem::path(basePath).replace_extension(L".log"),std::ios::trunc);
-        log("ThrottleAT 0.4.1 adaptive AT and motorcycles CE059 Windows: live driving validation pending");
+        log("ThrottleAT 0.5.0-test motorcycle classes and experimental CVT CE059 Windows: live driving validation pending");
         n=GetModuleFileNameW(nullptr,buffer,32768); if(!n||n>=32768) return 0;
         const auto exe=std::filesystem::path(buffer);
         if(!supportedVersion(exe)) { log("Requires EXE file version 1.2.0.59: no hook installed."); return 0; }
@@ -455,7 +530,7 @@ int initialize(HMODULE module) noexcept {
         if(!ini) { log("Missing INI: no hook installed."); return 0; }
         config=at::parseConfig(ini); loadModels(exe.parent_path());
         csv.open(std::filesystem::path(basePath).replace_extension(L".csv"),std::ios::trunc);
-        csv<<"time_ms,mode,vehicle_id,model,throttle,brake,speed_mps,control_rpm,gear,requested,reason,applied,status,native_revs,clutch,filtered_throttle,up_threshold,down_threshold\n";
+        csv<<"time_ms,mode,vehicle_id,model,throttle,brake,speed_mps,control_rpm,gear,requested,reason,applied,status,native_revs,clutch,filtered_throttle,up_threshold,down_threshold,cvt_ratio,cvt_target,class_id\n";
         csv.flush();
         // Bike physics VA CED298 calls the same CTransmission::process.
         // Verify the shared layout and unmodified caller; other routes leave bikes alone.
@@ -465,8 +540,11 @@ int initialize(HMODULE module) noexcept {
             matches(image+0x8ed1b9,{0xf6,0x80,0x64,0x01,0,0,0x01}) &&
             matches(image+0x8ed24a,{0x81,0xc2,0x70,0x01,0,0}) &&
             matches(image+0x82fea4,{0x83,0xb9,0x04,0x13,0,0,0x01});
-        log(bikeVerified ? "Motorcycle route verified: bikes and scooters use ThrottleAT automatic shifts; CVT unavailable."
+        log(bikeVerified ? "Motorcycle route verified: class-specific ThrottleAT automatic shifts available."
                          : "Motorcycle route differs: motorcycle control unavailable.");
+        cvtVerified=bikeVerified && verifiedCvtLayout(image);
+        log(cvtVerified ? "CVT engine instruction windows verified; preparing three ratio hooks."
+                        : "CVT engine layout unavailable; Scooter stepped AT remains available.");
         if(MH_Initialize()!=MH_OK) { log("MinHook initialization failed."); return 0; }
         const auto target=reinterpret_cast<void*>(image+shiftRva);
         void* lcpTarget=nullptr;
@@ -499,11 +577,29 @@ int initialize(HMODULE module) noexcept {
                                          reinterpret_cast<LPCWSTR>(lcpTarget),&pinned)) {
             MH_RemoveHook(lcpTarget); MH_RemoveHook(target); MH_Uninitialize(); log("LCP module pin failed."); return 0;
         }
+        std::array<void*,3> cvtTargets{reinterpret_cast<void*>(image+0x82fe3f),reinterpret_cast<void*>(image+0x82fff2),reinterpret_cast<void*>(image+0x830075)};
+        const std::array<void*,3> cvtGates{reinterpret_cast<void*>(&atCvtRpmGate),reinterpret_cast<void*>(&atCvtLimitGate),reinterpret_cast<void*>(&atCvtTorqueGate)};
+        const std::array<void**,3> cvtGateways{&atCvtRpmGateway,&atCvtLimitGateway,&atCvtTorqueGateway};
+        atCvtRpmContinue=reinterpret_cast<void*>(image+0x82fe45);
+        atCvtLimitContinue=reinterpret_cast<void*>(image+0x82fff8);
+        atCvtTorqueContinue=reinterpret_cast<void*>(image+0x83007b);
+        unsigned cvtCreated=0;
+        if(cvtVerified) {
+            for(;cvtCreated<3;++cvtCreated)
+                if(MH_CreateHook(cvtTargets[cvtCreated],cvtGates[cvtCreated],cvtGateways[cvtCreated])!=MH_OK) break;
+            if(cvtCreated!=3) {
+                for(unsigned i=0;i<cvtCreated;++i) MH_RemoveHook(cvtTargets[i]);
+                cvtVerified=false; log("CVT hook creation unavailable; Scooter stepped AT retained.");
+            }
+        }
         lcpActive=lcpTarget!=nullptr;
         state=config.enabled?2:1;
-        if(MH_QueueEnableHook(target)!=MH_OK || (lcpTarget && MH_QueueEnableHook(lcpTarget)!=MH_OK) || MH_ApplyQueued()!=MH_OK) {
+        bool queued=MH_QueueEnableHook(target)==MH_OK && (!lcpTarget || MH_QueueEnableHook(lcpTarget)==MH_OK);
+        if(cvtVerified) for(auto hook:cvtTargets) queued=queued && MH_QueueEnableHook(hook)==MH_OK;
+        if(!queued || MH_ApplyQueued()!=MH_OK) {
             state=0; MH_Uninitialize(); log("Hook enable failed; original gear selection retained."); return 0;
         }
+        if(cvtVerified) log("CVT TEST hooks installed: RPM, limiter and drive-force use one per-vehicle ratio lease.");
         log(lcpActive?"LCP COMPATIBILITY ACTIVE: engine/RPM processing retained; forward shift decisions connected.":"Original game forward-shift route active.");
         log(config.enabled?"Hook installed. CONTROL enabled. F8 switches to stock shifts.":"Hook installed. OBSERVE only. F8 enables experimental control.");
         return state.load();

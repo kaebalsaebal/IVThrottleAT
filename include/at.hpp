@@ -6,17 +6,20 @@
 #include <string>
 
 namespace at {
-enum class VehicleClass { Passenger, Heavy, Sport, Motorcycle };
+enum class VehicleClass { Passenger, Heavy, Sport, Motorcycle, SportBike, CruiserBike, StandardBike, Scooter };
 struct Tune {
     double low = .22, mid = .54, high = .94;
     double down = .07, kickThrottle = .82, kickTarget = .78;
     double cooldown = .65, confirm = .12;
     double lightThrottle = .30, midThrottle = .65, lightRise = .04;
     double liftHold = .45;
+    double cvt = 0, cvtLow = .32, cvtHigh = .78, cvtRate = 1.8;
 };
 struct Config {
     bool enabled = false; // Explicit opt-in; a verified backend is also required.
     std::map<std::string, std::map<std::string, double>> sections;
+    std::map<std::string, VehicleClass> bikeClasses;
+    VehicleClass bikeClass(const std::string& model) const;
     Tune resolve(VehicleClass kind, const std::string& model) const;
 };
 Config parseConfig(std::istream& input); // Throws on unknown or invalid options.
@@ -51,6 +54,18 @@ private:
     double lastTime_ = -1, lastShift_ = 0, since_ = 0, requestTime_ = 0;
     int observed_ = 0, candidate_ = 0, pending_ = 0;
     double demand_ = 0, previousPedal_ = 0, liftUntil_ = 0;
+};
+
+struct CvtDecision { bool active = false; double ratio = 0, targetRevs = 0; };
+class CvtController {
+public:
+    CvtDecision update(const Telemetry& t, const Tune& tune, double wheelSpeed, double velocityScale);
+    void reset() { *this = CvtController{}; }
+private:
+    std::uint64_t vehicle_ = 0;
+    double lastTime_ = -1, ratio_ = 0;
+    double minRatio_ = 0, maxRatio_ = 0;
+    int anchorGear_ = 0;
 };
 
 // All methods execute on ONE verified game/physics thread, never a polling worker.

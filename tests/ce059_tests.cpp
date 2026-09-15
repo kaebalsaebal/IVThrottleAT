@@ -104,14 +104,14 @@ int main(int argc,char** argv) {
         config=at::Config{}; addModel("FAGGIO"); put(modelInfo+0x3c,joaat("FAGGIO"));
         put(vehicle+0x1304,1u); put(vehicle+0xf84,2);
         put(trans,std::int16_t{1}); put(trans+4,.31f); put(trans+0x10,.62f);
-        put(sp+0x1c,7.75f); put(sp+0x20,7.75f); // mechanical revs=.31
+        put(sp+0x1c,6.5f); put(sp+0x20,6.5f); // mechanical revs=.26
         bikeVerified=false; state=2; controller.reset();
         check(atDispatch(trans,handling,stack.data())==0,"unverified bike route never writes");
         bikeVerified=true; lastControlTime=-1; lastControlId=0;
         int bikeResult=0;
         for(unsigned i=0;i<90;++i) { put(image+clockRva,5000u+i*10); bikeResult=atDispatch(trans,handling,stack.data()); }
-        check(bikeResult==1 && read<std::int16_t>(trans)==1,"Faggio actively holds Motorcycle gear instead of passenger early shift or stock bypass");
-        put(sp+0x1c,9.5f); put(sp+0x20,9.5f); // mechanical revs=.38, crosses Motorcycle band
+        check(bikeResult==1 && read<std::int16_t>(trans)==1,"Faggio actively holds Scooter gear instead of passenger early shift or stock bypass");
+        put(sp+0x1c,9.5f); put(sp+0x20,9.5f); // mechanical revs=.38, crosses Scooter band
         for(unsigned i=0;i<30;++i) { put(image+clockRva,5900u+i*10); atDispatch(trans,handling,stack.data()); }
         check(read<std::int16_t>(trans)==2,"Faggio conventional ThrottleAT upshift when CVT unavailable");
         check(read<float>(trans+4)==.31f,"bike native revs preserved");
@@ -122,6 +122,44 @@ int main(int argc,char** argv) {
         put(vehicle+0xf84,2); put(vehicle+0xf50,std::uintptr_t{0});
         check(atDispatch(trans,handling,stack.data())==0,"bike passenger ownership rejected");
         put(vehicle+0xf50,ped); put(vehicle+0x1304,0u); put(vehicle+0xf84,4);
+        // A continuous ratio is published once, then consumed by engine RPM,
+        // optional limiter and torque sites. Neither shared handling nor gear is changed.
+        put(vehicle+0x1304,1u); put(vehicle+0xf84,2); put(trans,std::int16_t{1}); put(trans+0x10,1.0f);
+        put(sp+0x1c,10.0f); put(sp+0x20,10.0f); cvtVerified=true; cvtFault=false;
+        lastControlTime=-1; lastControlId=0; cvtController.reset(); state=2;
+        std::array<unsigned char,0x100> originalHandling{};
+        copyRead(originalHandling.data(),handling,originalHandling.size());
+        float rpmRatio=0,limitRatio=0,torqueRatio=0;
+        for(unsigned i=0;i<60;++i) {
+            put(image+clockRva,7000u+i*10);
+            const int applied=atDispatch(trans,handling,stack.data());
+            if(cvtLease.active) {
+                check(applied==1,"CVT holds the original shift decision");
+                check(atCvtRatio(2,trans,handling,&torqueRatio)==0,"torque cannot consume a stale or out-of-order ratio");
+                check(atCvtRatio(0,trans,handling,&rpmRatio)==1,"CVT RPM ratio");
+                check(atCvtRatio(1,trans,handling,&limitRatio)==1,"CVT limiter ratio");
+                check(atCvtRatio(2,trans,handling,&torqueRatio)==1,"CVT drive-force ratio");
+                check(rpmRatio==limitRatio && rpmRatio==torqueRatio,"all engine sites share one ratio");
+                check(atCvtRatio(0,trans,handling,&rpmRatio)==0,"consumed engine lease cannot be reused");
+            }
+        }
+        check(rpmRatio>ratios[5] && rpmRatio<ratios[1],"continuous ratio lies between factory gears");
+        check(read<std::int16_t>(trans)==1 && read<float>(trans+4)==.31f,"CVT decision does not fake RPM or force integer shifts");
+        check(std::memcmp(originalHandling.data(),reinterpret_cast<void*>(handling),originalHandling.size())==0,"shared handling remains untouched");
+        put(image+clockRva,7600u); atDispatch(trans,handling,stack.data());
+        check(atCvtRatio(0,trans,handling+4,&rpmRatio)==0,"other handling cannot consume ratio");
+        put(flags,std::uint8_t{4});
+        check(atCvtRatio(0,trans,handling,&rpmRatio)==0,"recycled vehicle cannot inherit CVT ratio");
+        put(image+clockRva,7610u); atDispatch(trans,handling,stack.data());
+        put(image+clockRva,7611u);
+        check(atCvtRatio(0,trans,handling,&rpmRatio)==0,"stale game tick cannot consume ratio");
+        put(image+clockRva,7620u); atDispatch(trans,handling,stack.data()); state=1;
+        check(atCvtRatio(0,trans,handling,&rpmRatio)==0,"OFF immediately disables all CVT substitutions"); state=2;
+        put(image+clockRva,7630u); atDispatch(trans,handling,stack.data());
+        check(atCvtRatio(0,trans,handling,&rpmRatio)==1 && atCvtRatio(2,trans,handling,&torqueRatio)==1,"limiter may be bypassed by original redline branch");
+        config.sections["Class:Scooter"]["Cvt"]=0;
+        put(image+clockRva,7640u); atDispatch(trans,handling,stack.data());
+        check(!cvtLease.active,"Cvt=0 selects Scooter stepped AT");
         std::cout<<checks<<" CE059 bridge checks passed\n";
     } catch(const std::exception& e) { std::cerr<<e.what()<<'\n'; VirtualFree(memory,0,MEM_RELEASE);return 1; }
     VirtualFree(memory,0,MEM_RELEASE); return 0;

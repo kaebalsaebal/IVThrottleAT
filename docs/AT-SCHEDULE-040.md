@@ -1,3 +1,5 @@
+> Historical 0.4.x schedule notes. 0.5.0-test retains car tuning and replaces the bike classification/CVT behavior; see [CVT-050-EVIDENCE.md](CVT-050-EVIDENCE.md).
+
 # ThrottleAT 0.4.1 — shift schedule and motorcycle integration
 
 0.4.1 removes the Model:SULTAN override. Sultan uses the common Passenger tune; the 0.4.0 controller and bike integration are otherwise unchanged. Replace the INI as well as the ASI: an old INI still supplies the old model override.

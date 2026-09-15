@@ -1,3 +1,5 @@
+> 0.5.0-test adds optional engine-ratio hooks; see [CVT-050-EVIDENCE.md](CVT-050-EVIDENCE.md). The evidence below describes the retained base AT integration.
+
 # CE059 native integration evidence and limits
 
 Target: Windows x86 GTAIV.exe 1.2.0.59. The adapter is **experimental and statically verified**, not live-driving verified. The offset values below were read from the actual user-provided executable. Unknown versions are not scanned speculatively or accepted by version string alone.
