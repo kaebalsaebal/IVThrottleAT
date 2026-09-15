@@ -1,4 +1,4 @@
-# Integration status — 0.3.0
+# Integration status — 0.4.0
 
 The original unavailable backend remains an interface/example in at.hpp. MSVC Win32 builds now use a concrete CE059 synchronous transmission hook in ce059.cpp. It calls Controller directly, commits the exact statically observed stock transition fields, and either skips stock forward selection for that invocation or passes through. It uses one statically verified native text implementation for F8 notifications and does not depend on FusionFix exports.
 
@@ -8,3 +8,5 @@ InitializeASI is the verified Ultimate ASI Loader startup export. AT_Initialize 
 
 The portable Runtime lease contract is still useful for future adapters. This CE059 adapter has no persistent per-vehicle stock-disable state: every call chooses its own branch, so disappearance of callbacks needs no timeout thread to release control. Only adjacent successful shifts write state. No worker polls input or vehicle memory.
 The supplied LibertyCityPlates PatchEngine route is now recognized and receives an additional forward-decision hook. Its engine/RPM routine is retained. Unknown changed call targets or instruction layouts are rejected. This check is made at initialization only; LCP must be loaded first. See LCP-COMPATIBILITY.md. F8 ON indicates armed mode; ACTIVE is only emitted on actual accepted player control. Entry diagnostics from 0.2.3 remain in source/tests but are not installed.
+
+0.4.0 enables the verified original bike caller with the existing original-game gate. Type-1 bikes and scooters use the Motorcycle preset. True CVT is unavailable; Faggio still receives ThrottleAT stepped automatic shifts. See AT-SCHEDULE-040.md for the call-site evidence, limits, schedule and regression scenarios.

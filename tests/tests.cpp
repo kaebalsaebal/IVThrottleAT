@@ -34,14 +34,14 @@ struct Fake final : at::Backend {
 };
 int main(int argc, char** argv) {
     try {
-        for (const auto& test : {std::array<double,3>{.1,.55,3}, {.5,.60,2}, {.5,.70,3}, {1,.90,2}, {1,.96,3}, {1,.45,1}, {1,.60,2}}) {
+        for (const auto& test : {std::array<double,3>{.1,.55,3}, {.5,.35,2}, {.5,.70,3}, {1,.90,2}, {1,.96,3}, {1,.45,1}, {1,.60,2}}) {
             at::Controller c; auto t=car(test[0],test[1]);
             check(run(c,t).gear == static_cast<int>(test[2]), "shift map / kickdown / overrev guard");
         }
         at::Controller c; auto t=car(.1,.55);
-        check(run(c,t,50).gear==2, "initial cooldown");
-        check(run(c,t,30).gear==3, "confirmed upshift");
-        t.gear=3; t.rpm=.2;
+        check(run(c,t,15).gear==2, "initial synchronization hold");
+        check(run(c,t,30).gear==3, "confirmed upshift after synchronization");
+        t.gear=3; t.rpm=.05;
         check(run(c,t,50).gear==3, "cooldown after acknowledgement");
         check(run(c,t,40).gear==2, "low rpm downshift");
         c.reset(); t=car(1,.45); t.brake=.5;
@@ -78,7 +78,7 @@ int main(int argc, char** argv) {
         auto parsed=at::parseConfig(ini);
         check(parsed.enabled, "enabled parsed");
         check(parsed.resolve(at::VehicleClass::Sport,"INFERNUS").high==.98, "model wins");
-        check(parsed.resolve(at::VehicleClass::Heavy,"BUS").low==.36, "heavy preset");
+        check(parsed.resolve(at::VehicleClass::Heavy,"BUS").low==.20, "heavy preset");
         for (const auto* bad : {"[General]\nEnabled=yes", "[Class:Sport]\nHigh=nan", "[Class:Sport]\nHigh=.4", "[Class:Sport]\nLow=.4junk", "[Oops]\nX=1"}) {
             bool rejected=false; try { std::istringstream s(bad); at::parseConfig(s); } catch (...) { rejected=true; }
             check(rejected,"bad config rejected");

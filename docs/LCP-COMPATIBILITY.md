@@ -1,4 +1,6 @@
-# LibertyCityPlates 호환성 수정 — ThrottleAT 0.3.0
+# LibertyCityPlates 호환성 수정 — 0.3.0 연결 근거
+
+0.4.0에서도 아래 LCP 연결을 사용합니다. 아래 변속 설정 수치는 과거 0.3.0 기록입니다. 현재의 재조정된 설정과 바이크·스쿠터 지원은 [AT-SCHEDULE-040.md](AT-SCHEDULE-040.md)를 참고하세요.
 
 ## 이번 로그에서 확인한 원인
 

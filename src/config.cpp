@@ -18,7 +18,9 @@ std::string upper(std::string s) {
 const std::map<std::string, double Tune::*> fields = {
     {"Low", &Tune::low}, {"Mid", &Tune::mid}, {"High", &Tune::high},
     {"Down", &Tune::down}, {"KickThrottle", &Tune::kickThrottle},
-    {"KickTarget", &Tune::kickTarget}, {"Cooldown", &Tune::cooldown}, {"Confirm", &Tune::confirm}
+    {"KickTarget", &Tune::kickTarget}, {"Cooldown", &Tune::cooldown}, {"Confirm", &Tune::confirm},
+    {"LightThrottle", &Tune::lightThrottle}, {"MidThrottle", &Tune::midThrottle},
+    {"LightRise", &Tune::lightRise}, {"LiftHold", &Tune::liftHold}
 };
 void overlay(Tune& p, const Config& c, const std::string& section) {
     const auto it = c.sections.find(section);
@@ -27,18 +29,20 @@ void overlay(Tune& p, const Config& c, const std::string& section) {
 }
 void validate(const Tune& p) {
     for (const auto& f : fields) if (!std::isfinite(p.*f.second)) throw std::runtime_error("Nonfinite tuning");
-    if (!(p.down >= .1 && p.down + .12 < p.low && p.low <= p.mid && p.mid <= p.high && p.high <= .98 &&
+    if (!(p.down >= .04 && p.down + .04 < p.low && p.low <= p.mid && p.mid <= p.high && p.high <= .98 &&
           p.kickThrottle >= .5 && p.kickThrottle <= 1 && p.kickTarget > p.down && p.kickTarget <= .88 &&
-          p.cooldown >= .2 && p.cooldown <= 5 && p.confirm >= .04 && p.confirm <= .5))
+          p.cooldown >= .2 && p.cooldown <= 5 && p.confirm >= .04 && p.confirm <= .5 &&
+          p.lightThrottle >= .1 && p.lightThrottle <= .45 && p.midThrottle > p.lightThrottle && p.midThrottle <= .85 &&
+          p.lightRise >= 0 && p.low + p.lightRise <= p.mid && p.liftHold >= 0 && p.liftHold <= 2))
         throw std::runtime_error("Invalid tuning ranges or hysteresis");
 }
 Tune Config::resolve(VehicleClass kind, const std::string& model) const {
     Tune p;
     std::string name = "Passenger";
     switch (kind) {
-    case VehicleClass::Heavy: p.low=.36; p.mid=.55; p.high=.88; p.down=.18; p.cooldown=.9; name="Heavy"; break;
-    case VehicleClass::Sport: p.low=.48; p.mid=.74; p.high=.97; p.cooldown=.45; name="Sport"; break;
-    case VehicleClass::Motorcycle: p.low=.50; p.mid=.76; p.high=.97; p.cooldown=.40; name="Motorcycle"; break;
+    case VehicleClass::Heavy: p.low=.20; p.mid=.48; p.high=.88; p.down=.07; p.cooldown=.9; name="Heavy"; break;
+    case VehicleClass::Sport: p.low=.25; p.mid=.64; p.high=.97; p.down=.09; p.cooldown=.45; name="Sport"; break;
+    case VehicleClass::Motorcycle: p.low=.32; p.mid=.68; p.high=.97; p.down=.11; p.cooldown=.40; name="Motorcycle"; break;
     default: break;
     }
     overlay(p, *this, "Class:" + name);

@@ -8,9 +8,11 @@
 namespace at {
 enum class VehicleClass { Passenger, Heavy, Sport, Motorcycle };
 struct Tune {
-    double low = .42, mid = .66, high = .94;
-    double down = .23, kickThrottle = .82, kickTarget = .78;
+    double low = .22, mid = .54, high = .94;
+    double down = .07, kickThrottle = .82, kickTarget = .78;
     double cooldown = .65, confirm = .12;
+    double lightThrottle = .30, midThrottle = .65, lightRise = .04;
+    double liftHold = .45;
 };
 struct Config {
     bool enabled = false; // Explicit opt-in; a verified backend is also required.
@@ -28,10 +30,13 @@ struct Telemetry {
     double time = 0;       // Monotonic simulation seconds, not wall clock.
     double age = 0;        // Seconds since this snapshot was acquired.
     double throttle = 0;  // Effective analog accelerator AFTER game input mapping.
-    double brake = 0, speed = 0, rpm = 0; // m/s; RPM / verified engine redline.
+    double brake = 0, speed = 0, rpm = 0; // m/s; normalized mechanical wheel/ratio signal, NOT physical RPM.
+    double nativeRevs = -1, clutch = 1; // Adapter diagnostics, never used as guessed physical RPM.
     int gear = 0, gears = 0; // Forward gears are 1..gears; neutral/reverse rejected.
     std::array<double, 9> ratios{}; // Positive verified ratios, index = forward gear.
 };
+struct ShiftBands { double up, down, minAfterUpshift; };
+ShiftBands shiftBands(double throttle, const Tune& tune);
 bool valid(const Telemetry& t);
 enum class Reason { Hold, Upshift, Downshift, Kickdown, Fallback };
 struct Decision { int gear = 0; Reason reason = Reason::Fallback; };
@@ -40,10 +45,12 @@ class Controller {
 public:
     Decision update(const Telemetry& t, const Tune& tune);
     void reset();
+    double demand() const noexcept { return demand_; }
 private:
     std::uint64_t vehicle_ = 0;
     double lastTime_ = -1, lastShift_ = 0, since_ = 0, requestTime_ = 0;
     int observed_ = 0, candidate_ = 0, pending_ = 0;
+    double demand_ = 0, previousPedal_ = 0, liftUntil_ = 0;
 };
 
 // All methods execute on ONE verified game/physics thread, never a polling worker.

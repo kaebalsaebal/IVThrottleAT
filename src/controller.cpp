@@ -18,20 +18,47 @@ bool valid(const Telemetry& t) {
     }
     return true;
 }
+// A shallow light-pedal band keeps gentle acceleration in the economy range.
+// These values are normalized mechanical speeds, not a calibrated tachometer.
+ShiftBands shiftBands(double throttle, const Tune& p) {
+    const double x = std::clamp(throttle, 0.0, 1.0);
+    const auto blend = [](double a, double b, double f) { return a + (b-a)*f; };
+    double up;
+    if (x <= p.lightThrottle)
+        up = blend(p.low, p.low+p.lightRise, x/p.lightThrottle);
+    else if (x <= p.midThrottle)
+        up = blend(p.low+p.lightRise, p.mid, (x-p.lightThrottle)/(p.midThrottle-p.lightThrottle));
+    else
+        up = blend(p.mid, p.high, (x-p.midThrottle)/(1-p.midThrottle));
+    // Demand-dependent low-speed recovery, capped below the upshift band.
+    const double down = std::min(p.down + .12*x*x, up - .06);
+    return {up, down, down + .035};
+}
 void Controller::reset() { *this = Controller{}; }
 Decision Controller::update(const Telemetry& t, const Tune& p) {
     if (!valid(t)) { reset(); return {}; }
     if (vehicle_ && (t.time < lastTime_ || t.time - lastTime_ > .25)) {
-        reset(); return {}; // Suspend/resume or time discontinuity: release stock control.
+        reset(); return {}; // Release original control after a time discontinuity.
     }
+    double dt = t.time - lastTime_;
     if (vehicle_ != t.vehicle) {
-        reset(); vehicle_ = t.vehicle; observed_ = t.gear; lastShift_ = t.time;
+        reset(); vehicle_ = t.vehicle; observed_ = t.gear;
+        // Entry synchronization is not a gear change. Settle for 200 ms, then
+        // allow an early first shift; actual shifts retain the full cooldown.
+        lastShift_ = t.time - p.cooldown + .20;
+        demand_ = previousPedal_ = t.throttle; dt = 0;
+    }
+    // A deliberate pedal release holds the gear briefly for engine braking.
+    if (previousPedal_ >= .55 && previousPedal_ - t.throttle >= .20)
+        liftUntil_ = t.time + p.liftHold;
+    previousPedal_ = t.throttle;
+    if (dt > 0) {
+        const double tau = t.throttle > demand_ ? .08 : .25;
+        demand_ += (t.throttle-demand_) * (1-std::exp(-dt/tau));
     }
     lastTime_ = t.time;
     if (pending_) {
         if (t.gear == pending_) {
-            // Gear acknowledgement and clutch reengagement are separate.
-            // Slow clutch recovery must not look like a failed gear command.
             observed_ = t.gear; pending_ = 0; lastShift_ = t.time;
         } else if (t.time - requestTime_ > 1.0) {
             reset(); return {}; // Gear request never acknowledged.
@@ -45,23 +72,22 @@ Decision Controller::update(const Telemetry& t, const Tune& p) {
     if (t.shifting || t.time - lastShift_ < p.cooldown) {
         candidate_ = 0; return {t.gear, Reason::Hold};
     }
-    const double up = t.throttle <= .5
-        ? p.low + (p.mid - p.low) * (t.throttle * 2)
-        : p.mid + (p.high - p.mid) * ((t.throttle - .5) * 2);
+    const auto bands = shiftBands(demand_, p);
     const auto predicted = [&](int gear) { return t.rpm * t.ratios[gear] / t.ratios[t.gear]; };
     int target = t.gear;
     Reason reason = Reason::Hold;
-    // One-gear kickdown. Brake inhibits kickdown but permits low-RPM recovery.
     if (t.gear > 1 && t.speed > 2 && t.brake < .1 &&
-        t.throttle >= p.kickThrottle && t.rpm < p.kickTarget &&
-        predicted(t.gear - 1) <= p.kickTarget) {
+        t.throttle >= p.kickThrottle && demand_ >= p.kickThrottle &&
+        t.rpm < p.kickTarget && predicted(t.gear - 1) <= p.kickTarget) {
         target--; reason = Reason::Kickdown;
-    } else if (t.gear > 1 && t.rpm < p.down && predicted(t.gear - 1) < up - .08) {
+    } else if (t.gear > 1 && t.rpm < bands.down && predicted(t.gear - 1) < bands.up - .04) {
         target--; reason = Reason::Downshift;
-    } else if (t.gear < t.gears && t.speed > 2 && t.rpm >= up &&
-               predicted(t.gear + 1) > p.down + .08 &&
-               // Avoid immediately kicking back down under the same demand.
-               (t.throttle < p.kickThrottle || t.rpm > p.kickTarget + .08)) {
+    } else if (t.gear < t.gears && t.speed > 2 && t.rpm >= bands.up &&
+               predicted(t.gear + 1) > bands.minAfterUpshift &&
+               // Never upshift on closed throttle; braking/lift retains the gear
+               // except near the normalized limiter. Reverse remains backend-owned.
+               t.throttle > .02 && ((t.brake < .15 && t.time >= liftUntil_) || t.rpm >= .98) &&
+               (demand_ < p.kickThrottle || t.rpm > p.kickTarget + .08)) {
         target++; reason = Reason::Upshift;
     }
     if (target == t.gear) { candidate_ = 0; return {t.gear, Reason::Hold}; }

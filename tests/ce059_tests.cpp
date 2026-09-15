@@ -72,7 +72,7 @@ int main(int argc,char** argv) {
         put(flags,std::uint8_t{0x81}); check(atDispatch(trans,handling,stack.data())==0,"freed slot bypass"); put(flags,std::uint8_t{2});
         const auto generation=identity(vehicle); put(flags,std::uint8_t{3}); check(identity(vehicle)!=generation,"reuse changes identity");
         put(wheelArray+0x164,0u); check(atDispatch(trans,handling,stack.data())==0,"partial contact fallback"); put(wheelArray+0x164,1u);
-        put(vehicle+0x1304,1u); check(atDispatch(trans,handling,stack.data())==0,"unsupported vehicle fallback"); put(vehicle+0x1304,0u);
+        put(vehicle+0x1304,2u); check(atDispatch(trans,handling,stack.data())==0,"unsupported vehicle fallback"); put(vehicle+0x1304,0u);
         put(trans,std::int16_t{2}); put(trans+0x10,1.0f); put(handling+0x40,std::uint8_t{9});
         check(atDispatch(trans,handling,stack.data())==0,"invalid gear count fallback"); put(handling+0x40,std::uint8_t{5});
         put(sp+0x1c,50.0f); check(atDispatch(trans,handling,stack.data())==0,"wheelspin fallback"); put(sp+0x1c,20.0f);
@@ -99,6 +99,29 @@ int main(int argc,char** argv) {
         check(atLcpDispatch(trans,handling,lcpFrame.data())==0,"LCP AI/other vehicle never controlled");
         put(ped+0xb30,vehicle);
         check(atLcpDispatch(trans,handling,nullptr)==0,"missing LCP frame safely forwards");
+        // Verified bikes use the original shared gate. Scooters receive the
+        // Motorcycle tune too: absence of CVT must not bypass custom control.
+        config=at::Config{}; addModel("FAGGIO"); put(modelInfo+0x3c,joaat("FAGGIO"));
+        put(vehicle+0x1304,1u); put(vehicle+0xf84,2);
+        put(trans,std::int16_t{1}); put(trans+4,.31f); put(trans+0x10,.62f);
+        put(sp+0x1c,7.75f); put(sp+0x20,7.75f); // mechanical revs=.31
+        bikeVerified=false; state=2; controller.reset();
+        check(atDispatch(trans,handling,stack.data())==0,"unverified bike route never writes");
+        bikeVerified=true; lastControlTime=-1; lastControlId=0;
+        int bikeResult=0;
+        for(unsigned i=0;i<90;++i) { put(image+clockRva,5000u+i*10); bikeResult=atDispatch(trans,handling,stack.data()); }
+        check(bikeResult==1 && read<std::int16_t>(trans)==1,"Faggio actively holds Motorcycle gear instead of passenger early shift or stock bypass");
+        put(sp+0x1c,9.5f); put(sp+0x20,9.5f); // mechanical revs=.38, crosses Motorcycle band
+        for(unsigned i=0;i<30;++i) { put(image+clockRva,5900u+i*10); atDispatch(trans,handling,stack.data()); }
+        check(read<std::int16_t>(trans)==2,"Faggio conventional ThrottleAT upshift when CVT unavailable");
+        check(read<float>(trans+4)==.31f,"bike native revs preserved");
+        put(wheelArray+0x164,0u);
+        check(atDispatch(trans,handling,stack.data())==0,"bike wheelie/contact loss restores original decision for that tick");
+        put(wheelArray+0x164,1u); put(vehicle+0xf84,4);
+        check(atDispatch(trans,handling,stack.data())==0,"bike inconsistent wheel count rejected");
+        put(vehicle+0xf84,2); put(vehicle+0xf50,std::uintptr_t{0});
+        check(atDispatch(trans,handling,stack.data())==0,"bike passenger ownership rejected");
+        put(vehicle+0xf50,ped); put(vehicle+0x1304,0u); put(vehicle+0xf84,4);
         std::cout<<checks<<" CE059 bridge checks passed\n";
     } catch(const std::exception& e) { std::cerr<<e.what()<<'\n'; VirtualFree(memory,0,MEM_RELEASE);return 1; }
     VirtualFree(memory,0,MEM_RELEASE); return 0;

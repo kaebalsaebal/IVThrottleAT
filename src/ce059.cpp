@@ -42,7 +42,7 @@ constexpr std::uintptr_t poolRva=0xee22a4, modelsRva=0xe95cd8;
 constexpr std::uintptr_t pauseRva=0xd73590, clockRva=0xd735b4;
 constexpr std::size_t transmissionOffset=0x1090;
 std::uintptr_t image=0;
-bool lcpActive=false;
+bool lcpActive=false, bikeVerified=false;
 std::atomic<unsigned long> lcpCalls{0};
 HMODULE self=nullptr;
 std::atomic<int> state{0}; // 0 unavailable, 1 observing, 2 control, 3 fault
@@ -135,6 +135,7 @@ void loadModels(const std::filesystem::path& root) {
             const auto comma=line.find(','); if(comma!=std::string::npos) addModel(line.substr(0,comma));
         }
     }
+    for(const auto* name:{"SULTAN","FAGGIO"}) addModel(name);
     for(const auto& section:config.sections) if(section.first.rfind("Model:",0)==0) addModel(section.first.substr(6));
 }
 bool supportedVersion(const std::filesystem::path& file) {
@@ -232,8 +233,11 @@ void record(const at::Telemetry& t, const at::Decision& d, bool applied, const c
     const auto now=static_cast<std::uint32_t>(t.time*1000);
     const bool change=d.reason!=at::Reason::Hold || t.vehicle!=lastVehicle;
     if(csv&&rows<60000&&(change||now-lastSampleTime>=100)) {
+        const auto tune=config.resolve(t.kind,t.model);
+        const double demand=state.load()==2 ? controller.demand() : t.throttle;
+        const auto bands=at::shiftBands(demand,tune);
         csv<<now<<','<<state.load()<<','<<t.vehicle<<','<<t.model<<','<<t.throttle<<','<<t.brake<<','<<t.speed<<','
-           <<t.rpm<<','<<t.gear<<','<<d.gear<<','<<static_cast<int>(d.reason)<<','<<applied<<','<<label<<'\n';
+           <<t.rpm<<','<<t.gear<<','<<d.gear<<','<<static_cast<int>(d.reason)<<','<<applied<<','<<label<<','<<t.nativeRevs<<','<<t.clutch<<','<<demand<<','<<bands.up<<','<<bands.down<<'\n';
         if(change||rows%10==0) csv.flush(); ++rows; lastSampleTime=now;
     }
     lastVehicle=t.vehicle;
@@ -307,7 +311,10 @@ int dispatch(std::uintptr_t t, std::uintptr_t handling, const std::uint32_t* sta
     };
     if(state.load()==3) return 0;
     if(read<std::uint8_t>(image+pauseRva)||read<std::uint8_t>(image+pauseRva+1)) { controller.reset(); return 0; }
-    if(read<std::uint32_t>(vehicle+0x1304)!=0 || read<std::uintptr_t>(vehicle+0xdc8)!=handling) return reject("unsupported type or handling mismatch"); // Automobiles only.
+    const auto type=read<std::uint32_t>(vehicle+0x1304);
+    if((type!=0 && type!=1) || read<std::uintptr_t>(vehicle+0xdc8)!=handling)
+        return reject("unsupported type or handling mismatch");
+    if(type==1 && !bikeVerified) return reject("bike route not verified");
     at::Telemetry sample;
     sample.vehicle=identity(vehicle); if(!sample.vehicle) return reject("vehicle pool identity unavailable");
     sample.time=read<std::uint32_t>(image+clockRva)/1000.0;
@@ -315,6 +322,7 @@ int dispatch(std::uintptr_t t, std::uintptr_t handling, const std::uint32_t* sta
     const float gameRevs=read<float>(t+4); sample.rpm=gameRevs;
     const float gas=read<float>(vehicle+0x1078), brake=read<float>(vehicle+0x107c), clutch=read<float>(t+0x10);
     if(!std::isfinite(gas)||gas<0||gas>1.01f||!std::isfinite(brake)||std::abs(brake)>1.01f||!std::isfinite(clutch)||clutch<0||clutch>1.01f) { controller.reset(); return 0; }
+    sample.nativeRevs=gameRevs; sample.clutch=clutch;
     sample.throttle=std::min(1.0,static_cast<double>(gas)); sample.brake=std::min(1.0,std::abs(static_cast<double>(brake)));
     // In first gear both vanilla and LCP deliberately cap the clutch below
     // 1 at low revs. This is launch slip, not an outstanding gear change.
@@ -329,7 +337,7 @@ int dispatch(std::uintptr_t t, std::uintptr_t handling, const std::uint32_t* sta
     if(!std::isfinite(wheel)||!std::isfinite(longitudinal)||longitudinal<-.1f||
        std::abs(wheel-longitudinal)>std::max(3.0,sample.speed*.35)) { controller.reset(); return 0; }
     const int wheels=read<int>(vehicle+0xf84); const auto wheelArray=read<std::uintptr_t>(vehicle+0xf80);
-    sample.grounded=wheels>=2&&wheels<=8&&wheelArray;
+    sample.grounded=wheels>=2&&wheels<=8&&wheelArray && (type!=1 || wheels==2);
     for(int i=0;sample.grounded&&i<wheels;++i) sample.grounded=(read<std::uint32_t>(wheelArray+i*0x170+0x164)&1)!=0;
     if(sample.gears>0&&sample.gears<=8) for(int i=1;i<=sample.gears;++i) sample.ratios[i]=read<float>(handling+0x54+i*4);
     const auto modelIndex=read<std::int16_t>(vehicle+0x2e);
@@ -338,12 +346,13 @@ int dispatch(std::uintptr_t t, std::uintptr_t handling, const std::uint32_t* sta
     const auto hash=read<std::uint32_t>(modelInfo+0x3c);
     const auto m=models.find(hash);
     if(m!=models.end()) { sample.model=m->second.name; sample.kind=m->second.kind; }
+    if(type==1) sample.kind=at::VehicleClass::Motorcycle; // Includes FAGGIO: conventional AT fallback, not stock.
         const float flatVelocity=read<float>(handling+0x4c);
     if(!std::isfinite(flatVelocity)||flatVelocity<=1||!std::isfinite(gameRevs)||gameRevs<0||gameRevs>1.2f)
         return reject("invalid revs or handling velocity");
     // This is the normalized wheel/ratio signal used by stock forward shifts.
     // Native display revs are smoothed and sawtooth at the limiter. Use the
-    // mechanical estimate only when the stock clutch is fully reengaged.
+    // mechanical estimate in first gear or once the clutch reengages in higher gears.
     if(!sample.shifting&&sample.gear>=1&&sample.gear<=sample.gears&&sample.gear<=8)
         sample.rpm=std::abs(wheel)*sample.ratios[sample.gear]/flatVelocity;
     if(!at::valid(sample)) { record(sample,{},false,"invalid"); return reject("invalid sample / incomplete wheel contact / ratios"); }
@@ -367,10 +376,11 @@ int dispatch(std::uintptr_t t, std::uintptr_t handling, const std::uint32_t* sta
     }
     if(decision.gear!=sample.gear) {
         std::ostringstream out; out<<"SHIFT "<<sample.model<<' '<<sample.gear<<"->"<<decision.gear
-            <<" throttle="<<sample.throttle<<" controlRpm="<<sample.rpm<<" nativeRevs="<<gameRevs;
+            <<" throttle="<<sample.throttle<<" filtered="<<controller.demand()<<" controlRpm="<<sample.rpm<<" nativeRevs="<<gameRevs
+            <<" clutch="<<clutch<<" up="<<at::shiftBands(controller.demand(),config.resolve(sample.kind,sample.model)).up;
         log(out.str());
     }
-    record(sample,decision,true,lcpActive?"control_lcp":"control");
+    record(sample,decision,true,type==1?"control_motorcycle":(lcpActive?"control_lcp":"control"));
     return 1; // This invocation alone skips vanilla forward gear selection.
 }
 }
@@ -420,7 +430,7 @@ int initialize(HMODULE module) noexcept {
         DWORD n=GetModuleFileNameW(module,buffer,32768); if(!n||n>=32768) return 0;
         auto basePath=std::filesystem::path(buffer);
         logFile.open(std::filesystem::path(basePath).replace_extension(L".log"),std::ios::trunc);
-        log("ThrottleAT 0.3.0 LCP compatibility CE059 Windows: live driving validation pending");
+        log("ThrottleAT 0.4.0 adaptive AT and motorcycles CE059 Windows: live driving validation pending");
         n=GetModuleFileNameW(nullptr,buffer,32768); if(!n||n>=32768) return 0;
         const auto exe=std::filesystem::path(buffer);
         if(!supportedVersion(exe)) { log("Requires EXE file version 1.2.0.59: no hook installed."); return 0; }
@@ -445,8 +455,18 @@ int initialize(HMODULE module) noexcept {
         if(!ini) { log("Missing INI: no hook installed."); return 0; }
         config=at::parseConfig(ini); loadModels(exe.parent_path());
         csv.open(std::filesystem::path(basePath).replace_extension(L".csv"),std::ios::trunc);
-        csv<<"time_ms,mode,vehicle_id,model,throttle,brake,speed_mps,control_rpm,gear,requested,reason,applied,status\n";
+        csv<<"time_ms,mode,vehicle_id,model,throttle,brake,speed_mps,control_rpm,gear,requested,reason,applied,status,native_revs,clutch,filtered_throttle,up_threshold,down_threshold\n";
         csv.flush();
+        // Bike physics VA CED298 calls the same CTransmission::process.
+        // Verify the shared layout and unmodified caller; other routes leave bikes alone.
+        bikeVerified=callTarget(image+0x8ed298)==image+0x82f9a0 &&
+            matches(image+0x8ed282,{0x8d,0x8f,0x90,0x10,0,0}) &&
+            matches(image+0x8ed154,{0x8b,0xb7,0x84,0x0f,0,0}) &&
+            matches(image+0x8ed1b9,{0xf6,0x80,0x64,0x01,0,0,0x01}) &&
+            matches(image+0x8ed24a,{0x81,0xc2,0x70,0x01,0,0}) &&
+            matches(image+0x82fea4,{0x83,0xb9,0x04,0x13,0,0,0x01});
+        log(bikeVerified ? "Motorcycle route verified: bikes and scooters use ThrottleAT automatic shifts; CVT unavailable."
+                         : "Motorcycle route differs: motorcycle control unavailable.");
         if(MH_Initialize()!=MH_OK) { log("MinHook initialization failed."); return 0; }
         const auto target=reinterpret_cast<void*>(image+shiftRva);
         void* lcpTarget=nullptr;
