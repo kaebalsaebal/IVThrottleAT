@@ -264,7 +264,7 @@ void record(const at::Telemetry& t, const at::Decision& d, bool applied, const c
     const bool change=d.reason!=at::Reason::Hold || t.vehicle!=lastVehicle;
     if(csv&&rows<60000&&(change||now-lastSampleTime>=100)) {
         const auto tune=config.resolve(t.kind,t.model);
-        const double demand=state.load()==2 && !cvtLease.active ? controller.demand() : t.throttle;
+        const double demand=cvtLease.active ? cvtController.demand() : (state.load()==2 ? controller.demand() : t.throttle);
         const auto bands=at::shiftBands(demand,tune);
         csv<<now<<','<<state.load()<<','<<t.vehicle<<','<<t.model<<','<<t.throttle<<','<<t.brake<<','<<t.speed<<','
            <<t.rpm<<','<<t.gear<<','<<d.gear<<','<<static_cast<int>(d.reason)<<','<<applied<<','<<label<<','<<t.nativeRevs<<','<<t.clutch<<','<<demand<<','<<bands.up<<','<<bands.down<<','<<(cvtLease.active?cvtLease.ratio:0)<<','<<(cvtLease.active?cvtTarget:0)<<','<<static_cast<int>(t.kind)<<'\n';
@@ -399,7 +399,12 @@ int dispatch(std::uintptr_t t, std::uintptr_t handling, const std::uint32_t* sta
     const bool discontinuity=lastControlId!=sample.vehicle || lastControlTime<0 ||
         sample.time<lastControlTime || sample.time-lastControlTime>.25;
     lastControlId=sample.vehicle; lastControlTime=sample.time;
-    if(discontinuity) { controller.reset(); cvtController.reset(); record(sample,{sample.gear,at::Reason::Hold},false,"resync"); return 0; }
+    if(discontinuity) {
+        controller.reset(); cvtController.reset();
+        // A CVT starts from the current ratio and can own this very call.
+        // Do not give stock selection a free upshift on entry/resynchronization.
+        if(!canCvt) { record(sample,{sample.gear,at::Reason::Hold},false,"resync"); return 0; }
+    }
     if(canCvt) {
         const auto choice=cvtController.update(sample,tune,std::abs(wheel),flatVelocity);
         if(choice.active && playerIsDriver(vehicle) && identity(vehicle)==sample.vehicle) {
@@ -505,7 +510,7 @@ int initialize(HMODULE module) noexcept {
         DWORD n=GetModuleFileNameW(module,buffer,32768); if(!n||n>=32768) return 0;
         auto basePath=std::filesystem::path(buffer);
         logFile.open(std::filesystem::path(basePath).replace_extension(L".log"),std::ios::trunc);
-        log("ThrottleAT 0.5.0-test motorcycle classes and experimental CVT CE059 Windows: live driving validation pending");
+        log("ThrottleAT 0.5.1-test smooth CVT and experimental CVT CE059 Windows: live driving validation pending");
         n=GetModuleFileNameW(nullptr,buffer,32768); if(!n||n>=32768) return 0;
         const auto exe=std::filesystem::path(buffer);
         if(!supportedVersion(exe)) { log("Requires EXE file version 1.2.0.59: no hook installed."); return 0; }

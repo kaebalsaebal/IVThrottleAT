@@ -157,6 +157,18 @@ int main(int argc,char** argv) {
         check(atCvtRatio(0,trans,handling,&rpmRatio)==0,"OFF immediately disables all CVT substitutions"); state=2;
         put(image+clockRva,7630u); atDispatch(trans,handling,stack.data());
         check(atCvtRatio(0,trans,handling,&rpmRatio)==1 && atCvtRatio(2,trans,handling,&torqueRatio)==1,"limiter may be bypassed by original redline branch");
+        // Re-entry and higher-gear clutch slip used to leak to stepped AT.
+        for(int gear:{1,3,4}) {
+            put(trans,static_cast<std::int16_t>(gear));put(trans+0x10,.6f);
+            lastControlTime=-1;lastControlId=0;cvtController.reset();
+            for(unsigned i=0;i<120;++i) {
+                put(image+clockRva,8000u+gear*2000u+i*10);
+                put(vehicle+0x1078,.4f+(i%2 ? .01f : -.01f));
+                check(atDispatch(trans,handling,stack.data())==1 && cvtLease.active,"entry and pedal jitter never delegate safe CVT to stepped shifts");
+                check(read<std::int16_t>(trans)==gear,"CVT retains integer gear during clutch slip");
+                check(atCvtRatio(0,trans,handling,&rpmRatio)==1 && atCvtRatio(2,trans,handling,&torqueRatio)==1,"clutch slip retains engine ratio lease");
+            }
+        }
         config.sections["Class:Scooter"]["Cvt"]=0;
         put(image+clockRva,7640u); atDispatch(trans,handling,stack.data());
         check(!cvtLease.active,"Cvt=0 selects Scooter stepped AT");

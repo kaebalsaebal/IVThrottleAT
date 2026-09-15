@@ -13,7 +13,7 @@ struct Tune {
     double cooldown = .65, confirm = .12;
     double lightThrottle = .30, midThrottle = .65, lightRise = .04;
     double liftHold = .45;
-    double cvt = 0, cvtLow = .32, cvtHigh = .78, cvtRate = 1.8;
+    double cvt = 0, cvtLow = .20, cvtHigh = .82, cvtRate = 1.8, cvtMid = .44, cvtResponse = .25;
 };
 struct Config {
     bool enabled = false; // Explicit opt-in; a verified backend is also required.
@@ -61,9 +61,10 @@ class CvtController {
 public:
     CvtDecision update(const Telemetry& t, const Tune& tune, double wheelSpeed, double velocityScale);
     void reset() { *this = CvtController{}; }
+    double demand() const noexcept { return demand_; }
 private:
     std::uint64_t vehicle_ = 0;
-    double lastTime_ = -1, ratio_ = 0;
+    double lastTime_ = -1, ratio_ = 0, demand_ = 0;
     double minRatio_ = 0, maxRatio_ = 0;
     int anchorGear_ = 0;
 };

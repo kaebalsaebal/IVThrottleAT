@@ -21,7 +21,7 @@ const std::map<std::string, double Tune::*> fields = {
     {"KickTarget", &Tune::kickTarget}, {"Cooldown", &Tune::cooldown}, {"Confirm", &Tune::confirm},
     {"LightThrottle", &Tune::lightThrottle}, {"MidThrottle", &Tune::midThrottle},
     {"LightRise", &Tune::lightRise}, {"LiftHold", &Tune::liftHold},
-    {"Cvt", &Tune::cvt}, {"CvtLow", &Tune::cvtLow}, {"CvtHigh", &Tune::cvtHigh}, {"CvtRate", &Tune::cvtRate}
+    {"Cvt", &Tune::cvt}, {"CvtLow", &Tune::cvtLow}, {"CvtHigh", &Tune::cvtHigh}, {"CvtRate", &Tune::cvtRate}, {"CvtMid", &Tune::cvtMid}, {"CvtResponse", &Tune::cvtResponse}
 };
 void overlay(Tune& p, const Config& c, const std::string& section) {
     const auto it = c.sections.find(section);
@@ -35,8 +35,8 @@ void validate(const Tune& p) {
           p.cooldown >= .2 && p.cooldown <= 5 && p.confirm >= .04 && p.confirm <= .5 &&
           p.lightThrottle >= .1 && p.lightThrottle <= .45 && p.midThrottle > p.lightThrottle && p.midThrottle <= .85 &&
           p.lightRise >= 0 && p.low + p.lightRise <= p.mid && p.liftHold >= 0 && p.liftHold <= 2 &&
-          (p.cvt == 0 || p.cvt == 1) && p.cvtLow >= .15 && p.cvtHigh >= p.cvtLow && p.cvtHigh <= .95 &&
-          p.cvtRate >= .1 && p.cvtRate <= 5))
+          (p.cvt == 0 || p.cvt == 1) && p.cvtLow >= .15 && p.cvtMid >= p.cvtLow && p.cvtHigh >= p.cvtMid && p.cvtHigh <= .95 &&
+          p.cvtRate >= .1 && p.cvtRate <= 5 && p.cvtResponse >= .05 && p.cvtResponse <= 2))
         throw std::runtime_error("Invalid tuning ranges or hysteresis");
 }
 VehicleClass Config::bikeClass(const std::string& model) const {

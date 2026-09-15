@@ -44,10 +44,34 @@ int main(int argc,char** argv){try{
         t.grounded=false;t.time+=1/fps;check(!c.update(t,scooter,30,80).active,"airborne fails open");t.grounded=true;
     }
     at::CvtController c;t.time=0; t.gear=2;t.shifting=true;
-    check(!c.update(t,scooter,20,80).active,"unfinished stepped shift cannot enter CVT");
+    t.clutch=.6;
+    check(c.update(t,scooter,20,80).active,"clutch slip must not switch CVT to stepped AT");
+    t.clutch=1;
     t.shifting=false;auto disabled=scooter;disabled.cvt=0;
     check(!c.update(t,disabled,20,80).active,"Cvt=0 delegates to stepped AT");
     t.gear=1;t.time=.01;check(c.update(t,scooter,0,80).ratio==3.2,"standstill uses launch ratio without division by zero");
     t.time=.02;check(!c.update(t,scooter,-1,80).active,"reverse speed rejected");
+    // A sweep has many intermediate equilibria, not two RPM plateaus.
+    for(double fps:{30.,60.,144.}) for(double clutch:{.6,.8,1.}) {
+        double previous=0;
+        for(int pedal=0;pedal<=10;++pedal) {
+            at::CvtController sweep;t.gear=1;t.clutch=clutch;t.throttle=pedal/10.;t.time=0;
+            at::CvtDecision d;
+            for(int i=0;i<int(fps*6);++i) {t.time=i/fps;d=sweep.update(t,scooter,22,80);}
+            const double blended=(1-clutch)*t.throttle+clutch*22*d.ratio/80;
+            check(d.active && d.targetRevs>previous,"pedal sweep has distinct increasing targets");previous=d.targetRevs;
+            const double needed=(d.targetRevs-(1-clutch)*t.throttle)/clutch*80/22;
+            if(needed>=t.ratios[t.gears] && needed<=t.ratios[1])
+                check(std::abs(blended-d.targetRevs)<.002,"clutch blended native target follows requested revs");
+        }
+        at::CvtController jitter;t.time=0;t.throttle=.4;t.clutch=clutch;
+        auto d=jitter.update(t,scooter,22,80);double prevTarget=d.targetRevs,prevRatio=d.ratio;
+        for(int i=1;i<int(fps*5);++i) {
+            t.time=i/fps;t.throttle=.4+(i%2 ? .01 : -.01);d=jitter.update(t,scooter,22,80);
+            check(d.active && std::abs(d.targetRevs-prevTarget)<.004,"small pedal jitter keeps continuous RPM demand");
+            check(std::abs(d.ratio-prevRatio)<=3.2*scooter.cvtRate/fps+1e-8,"jitter keeps actuator slew limit");
+            prevTarget=d.targetRevs;prevRatio=d.ratio;
+        }
+    }
     std::cout<<checks<<" motorcycle/CVT checks passed\n";
 }catch(const std::exception& e){std::cerr<<e.what()<<'\n';return 1;}}
