@@ -19,8 +19,8 @@ int main(int argc,char** argv) {
         const auto cfg=at::parseConfig(file);
         const auto tune=cfg.resolve(at::VehicleClass::Passenger,"SULTAN");
         const auto light=at::shiftBands(.2,tune);
-        check(light.up<.24,"Sultan economy band stays low at 20 percent throttle");
-        check(at::shiftBands(.3,tune).up<=.25,"30 percent remains economy demand");
+        check(light.up<.26,"shared passenger economy band stays low at 20 percent throttle");
+        check(at::shiftBands(.3,tune).up<=.27,"30 percent remains economy demand");
         check(at::shiftBands(.5,tune).up>light.up && at::shiftBands(1,tune).up>.9,"medium and full demand separated");
         // Ramp physical wheel speed, acknowledge commands, apply real ratio drops.
         std::vector<double> firstShift;

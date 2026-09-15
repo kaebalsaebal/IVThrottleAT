@@ -430,7 +430,7 @@ int initialize(HMODULE module) noexcept {
         DWORD n=GetModuleFileNameW(module,buffer,32768); if(!n||n>=32768) return 0;
         auto basePath=std::filesystem::path(buffer);
         logFile.open(std::filesystem::path(basePath).replace_extension(L".log"),std::ios::trunc);
-        log("ThrottleAT 0.4.0 adaptive AT and motorcycles CE059 Windows: live driving validation pending");
+        log("ThrottleAT 0.4.1 adaptive AT and motorcycles CE059 Windows: live driving validation pending");
         n=GetModuleFileNameW(nullptr,buffer,32768); if(!n||n>=32768) return 0;
         const auto exe=std::filesystem::path(buffer);
         if(!supportedVersion(exe)) { log("Requires EXE file version 1.2.0.59: no hook installed."); return 0; }

@@ -59,7 +59,7 @@ Only an actual adjacent shift writes the four fields the vanilla shift branch wr
 
 ## Remaining live verification
 
-Static signatures, mock-memory tests and CPU-state tests establish a basis for testing, not proof of gameplay stability. Still verify loader timing, real pool/ratio values, 30/60+ FPS, Windows/FusionFix coexistence, throttle sweeps, up/down/kickdown, brake/reverse, wheelspin, jumps, vehicle switch, driver exit/death, pause/reload and crash-free shutdown. Compare `ThrottleAT.csv` in observe and control modes. Lifecycle gaps resynchronize through a stock-controlled tick. Unacknowledged shifts or access failures latch stock fallback; F8 resets and retries. A changed callback thread requires a game restart. User driving logs were analyzed for earlier builds. No live drive of the new 0.4.0 integration has been verified.
+Static signatures, mock-memory tests and CPU-state tests establish a basis for testing, not proof of gameplay stability. Still verify loader timing, real pool/ratio values, 30/60+ FPS, Windows/FusionFix coexistence, throttle sweeps, up/down/kickdown, brake/reverse, wheelspin, jumps, vehicle switch, driver exit/death, pause/reload and crash-free shutdown. Compare `ThrottleAT.csv` in observe and control modes. Lifecycle gaps resynchronize through a stock-controlled tick. Unacknowledged shifts or access failures latch stock fallback; F8 resets and retries. A changed callback thread requires a game restart. User driving logs were analyzed for earlier builds. No live drive of the new 0.4.1 integration has been verified.
 
 ## F8 notification revision
 
@@ -69,6 +69,6 @@ PRINT_STRING_WITH_LITERAL_STRING_NOW (native hash 0x0CA539D6) registers wrapper 
 
 The supplied 0.2.3 runtime log proves the automobile engine call targets LCP+E6D0. Startup now accepts either the original engine call or that specifically verified LCP layout; other routes fail closed. LCP forward decisions are hooked at EBCB and custom decisions rejoin EC70. The original game hook remains for paths that still use it. No entry observer hooks are installed in 0.3.0. OFF/fallback executes the selected original game or LCP branch. See [LCP evidence](LCP-COMPATIBILITY.md) for signatures, register/frame layout, load-order limitation and validation.
 
-## 0.4.0 motorcycle caller
+## 0.4.1 motorcycle caller
 
 The verified original bike process caller at RVA 8ED298 reaches the existing shared transmission routine and original midhook. No new detour or gate ABI is required. The five additional layout signatures, two-wheel checks, and scooter conventional-AT fallback are documented in [AT-SCHEDULE-040.md](AT-SCHEDULE-040.md).

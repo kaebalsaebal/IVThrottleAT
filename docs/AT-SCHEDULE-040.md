@@ -1,17 +1,19 @@
-# ThrottleAT 0.4.0 — shift schedule and motorcycle integration
+# ThrottleAT 0.4.1 — shift schedule and motorcycle integration
+
+0.4.1 removes the Model:SULTAN override. Sultan uses the common Passenger tune; the 0.4.0 controller and bike integration are otherwise unchanged. Replace the INI as well as the ASI: an old INI still supplies the old model override.
 
 ## Behavior
 
 This is a conventional stepped automatic shift controller. It does not replace the engine, torque curve or torque-converter physics. The shared controller evaluates the wheel/gear-ratio normalized speed; it does not assume LVS display RPM equals that value. Native engine revs remain untouched and are now logged alongside clutch, demand and thresholds.
 
-| Demand | Passenger up band | Sultan up band | Motorcycle up band |
-| --- | --- | --- | --- |
-| 10% | 0.2333 | 0.2133 | 0.3333 |
-| 20% | 0.2467 | 0.2267 | 0.3467 |
-| 30% | 0.2600 | 0.2400 | 0.3600 |
-| 50% | 0.4200 | 0.4000 | 0.5429 |
-| 65% | 0.5400 | 0.5200 | 0.6800 |
-| 100% | 0.9400 | 0.9400 | 0.9700 |
+| Demand | Passenger / Sultan up band | Motorcycle up band |
+| --- | --- | --- |
+| 10% | 0.2333 | 0.3333 |
+| 20% | 0.2467 | 0.3467 |
+| 30% | 0.2600 | 0.3600 |
+| 50% | 0.4200 | 0.5429 |
+| 65% | 0.5400 | 0.6800 |
+| 100% | 0.9400 | 0.9700 |
 
 These are steady filtered demand thresholds, not physical RPM or measured shift points. During a shift, confirmation/cooldown and the estimated next-gear RPM also affect the result. Closed throttle suppresses upshift even though the map has a mathematical zero-pedal endpoint.
 
@@ -45,6 +47,6 @@ A true CVT would require independently verified continuously variable ratio and 
 
 ## Validation and limits
 
-MSVC Win32 Release build and all seven CTest suites passed. Scenario tests run representative five-speed gear-ratio fixtures with Sultan tuning at 30/60/144 Hz, acknowledge requests and apply gear-ratio RPM drops. They check early 1-to-2 through fifth, no hunting, full-pedal hold, kickdown, lift-off hold and braking. These fixtures are not measured Sultan telemetry. Existing gate CPU preservation tests remain unchanged. Adapter tests prove Faggio gets active Motorcycle hold/upshift rather than passenger tuning or a stock bypass, and reject unverified bike routes, lost contact and passenger ownership.
+MSVC Win32 Release build and all seven CTest suites passed. Scenario tests run representative five-speed gear-ratio fixtures with the shared Passenger tuning (also used by Sultan) at 30/60/144 Hz, acknowledge requests and apply gear-ratio RPM drops. They check early 1-to-2 through fifth, no hunting, full-pedal hold, kickdown, lift-off hold and braking. These fixtures are not measured Sultan telemetry. Existing gate CPU preservation tests remain unchanged. Adapter tests prove Faggio gets active Motorcycle hold/upshift rather than passenger tuning or a stock bypass, and reject unverified bike routes, lost contact and passenger ownership.
 
-Actual 0.4.0 road testing, the user's precise dashboard RPM, and motorcycle runtime compatibility still require in-game validation. The public [LVS dashboard source](https://github.com/ekzestean/Liberty-Vehicle-Services-CE/blob/main/plugins/source/LVSCE_Dashboard_Bridge.cpp) uses display remapping and candidate/fallback inputs; no guessed dashboard offset is used for vehicle control. CSV now includes native_revs, clutch, filtered_throttle, up_threshold and down_threshold to distinguish map calibration from a display discrepancy.
+Actual 0.4.1 road testing, the user's precise dashboard RPM, and motorcycle runtime compatibility still require in-game validation. The public [LVS dashboard source](https://github.com/ekzestean/Liberty-Vehicle-Services-CE/blob/main/plugins/source/LVSCE_Dashboard_Bridge.cpp) uses display remapping and candidate/fallback inputs; no guessed dashboard offset is used for vehicle control. CSV now includes native_revs, clutch, filtered_throttle, up_threshold and down_threshold to distinguish map calibration from a display discrepancy.
